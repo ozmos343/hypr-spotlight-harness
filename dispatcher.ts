@@ -1,0 +1,1 @@
+/home/markus/.config/hypr/harness/cli.ts

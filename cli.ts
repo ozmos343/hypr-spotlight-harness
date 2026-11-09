@@ -1,0 +1,74 @@
+import { queryGemini, type FinalActionPayload } from "./agent";
+import { executeAction } from "./executor";
+import { config, getApiKey } from "./config";
+import { loadRollingBuffer, saveTurn, clearRollingBuffer, searchPersistentHistory } from "./history";
+
+async function main() {
+  const query = process.argv.slice(2).join(" ").trim();
+  if (!query) {
+    process.exit(0);
+  }
+
+  // Handle explicit reset/clear commands locally without an LLM call
+  if (/^(clear history|reset history|new session|reset)$/i.test(query)) {
+    clearRollingBuffer();
+    const proc = Bun.spawn(["notify-send", "-a", "spotlight", "Spotlight", "Session history cleared."]);
+    await proc.exited;
+    process.exit(0);
+  }
+
+  // Abort controller for fast exit
+  const abortController = new AbortController();
+  process.on("SIGINT", () => {
+    abortController.abort();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    abortController.abort();
+    process.exit(0);
+  });
+
+  const recentHistory = loadRollingBuffer();
+
+  // Instant history query
+  if (/^(history|what did i run|past commands)/i.test(query)) {
+    const match = query.match(/^history\s+(.*)/i);
+    const filter = match ? match[1] : "";
+    const results = searchPersistentHistory(filter, 8);
+    const summary = results.length > 0
+      ? results.map((r) => `• [${new Date(r.timestamp).toLocaleTimeString()}] ${r.user} -> ${r.action.action === 'exec_shell' ? r.action.command : r.action.action}`).join("\n")
+      : "No matching history found in disk log.";
+
+    await executeAction({
+      action: "spawn_widget",
+      backend: "kitty_command",
+      title: "Spotlight History Log",
+      command: `echo -e "\\033[1;36m=== Spotlight History ===\\033[0m\\n${summary.replace(/"/g, '\\"')}"`
+    });
+    return;
+  }
+
+  try {
+    const apiKey = getApiKey();
+    const action = await queryGemini(query, apiKey, recentHistory, abortController.signal);
+
+    // Save turn to rolling buffer + persistent disk storage
+    saveTurn({
+      timestamp: Date.now(),
+      user: query,
+      action,
+    });
+
+    await executeAction(action);
+  } catch (err: any) {
+    if (abortController.signal.aborted) {
+      process.exit(0);
+    }
+    console.error("Harness error:", err);
+    const proc = Bun.spawn(["notify-send", "-a", "spotlight", "-u", "critical", "Spotlight Error", String(err.message || err)]);
+    await proc.exited;
+    process.exit(1);
+  }
+}
+
+main();
