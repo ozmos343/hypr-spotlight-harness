@@ -8,13 +8,14 @@ UI_DIR="$HARNESS_DIR/ui"
 PROMPT_TEXT="ask, run, or generate..."
 INPUT=""
 
-if command -v walker &>/dev/null; then
-  INPUT=$(echo "" | walker --dmenu --placeholder "$PROMPT_TEXT" 2>/dev/null || true)
-elif command -v wofi &>/dev/null; then
+# Prefer wofi using our dedicated spotlight configuration for the sleek floating pill bar
+if command -v wofi &>/dev/null; then
   INPUT=$(echo "" | wofi --dmenu \
     -c "$UI_DIR/wofi.conf" \
     -s "$UI_DIR/style.css" \
     2>/dev/null || true)
+elif command -v walker &>/dev/null; then
+  INPUT=$(echo "" | walker --dmenu --placeholder "$PROMPT_TEXT" 2>/dev/null || true)
 else
   INPUT=$(kitty --class hypr-harness-floating --title "Spotlight" -e bash -c 'read -p "ask, run, or generate: " ans; echo "$ans"' 2>/dev/null || true)
 fi
@@ -23,5 +24,5 @@ fi
 INPUT="$(echo -e "${INPUT}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
 if [[ -n "$INPUT" ]]; then
-  bun run "$HARNESS_DIR/cli.ts" "$INPUT" &
+  bun run "$HARNESS_DIR/cli.ts" "$INPUT" >> /tmp/hypr-spotlight.log 2>&1 &
 fi
