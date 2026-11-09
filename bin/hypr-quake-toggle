@@ -6,10 +6,10 @@ CONSOLE_CLASS="hypr-quake-operator"
 
 # Check if the quake console is already running
 if ! hyprctl clients | grep -q "class: ${CONSOLE_CLASS}"; then
-  # Spawn it directly onto special:quake_operator
-  hyprctl dispatch 'hl.dsp.exec_cmd("kitty --class hypr-quake-operator --title \"Quake Operator Console\" bun run '"$HARNESS_DIR"'/quake_console.ts")'
-  sleep 0.2
+  # Spawn onto special:quake_operator
+  hyprctl dispatch 'hl.dsp.exec_cmd("[workspace special:quake_operator] kitty --class hypr-quake-operator --title \"Quake Operator Console\" bun run '"$HARNESS_DIR"'/quake_console.ts")'
+  sleep 0.25
 fi
 
-# Toggle visibility of the special workspace
+# Toggle slide-in / slide-out
 hyprctl dispatch togglespecialworkspace quake_operator
