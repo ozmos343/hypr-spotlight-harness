@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HARNESS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+UI_DIR="$HARNESS_DIR/ui"
+
+PROMPT_TEXT="ask, run, or generate..."
+INPUT=""
+
+if command -v walker &>/dev/null; then
+  INPUT=$(echo "" | walker --dmenu --placeholder "$PROMPT_TEXT" 2>/dev/null || true)
+elif command -v wofi &>/dev/null; then
+  INPUT=$(echo "" | wofi --dmenu \
+    -c "$UI_DIR/wofi.conf" \
+    -s "$UI_DIR/style.css" \
+    2>/dev/null || true)
+else
+  INPUT=$(kitty --class hypr-harness-floating --title "Spotlight" -e bash -c 'read -p "ask, run, or generate: " ans; echo "$ans"' 2>/dev/null || true)
+fi
+
+# Trim input
+INPUT="$(echo -e "${INPUT}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+if [[ -n "$INPUT" ]]; then
+  bun run "$HARNESS_DIR/cli.ts" "$INPUT" &
+fi
