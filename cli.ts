@@ -41,9 +41,9 @@ async function main() {
 
     await executeAction({
       action: "spawn_widget",
-      backend: "kitty_command",
+      backend: "dialog_yad",
       title: "Spotlight History Log",
-      command: `echo -e "\\033[1;36m=== Spotlight History ===\\033[0m\\n${summary.replace(/"/g, '\\"')}"`
+      command: `echo -e "=== Spotlight History ===\\n${summary.replace(/"/g, '\\"')}"`
     });
     return;
   }
@@ -58,9 +58,10 @@ async function main() {
 
       // If the model wants to present an interactive wizard:
       if (action.action === "prompt_wizard") {
-        const userChoice = runInteractiveWizard(action.title, action.prompt, action.options);
+        const uiType = action.ui_type || "gui_yad";
+        const userChoice = runInteractiveWizard(action.title, action.prompt, action.options, uiType);
         if (!userChoice) {
-          // User hit ESC / cancelled wizard
+          // User hit Cancel / ESC
           process.exit(0);
         }
 

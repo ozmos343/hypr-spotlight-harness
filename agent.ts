@@ -16,7 +16,7 @@ export type FinalActionPayload =
     }
   | {
       action: "spawn_widget";
-      backend: "tui_gum" | "dialog_yad" | "kitty_command";
+      backend: "dialog_yad" | "kitty_command" | "tui_gum";
       title?: string;
       command: string;
       arguments?: string[];
@@ -28,13 +28,15 @@ export type FinalActionPayload =
       prompt: string;
       options: string[];
       context: string;
+      ui_type?: "gui_yad" | "tui_kitty";
     };
 
 const SYSTEM_INSTRUCTION = `You are a proactive, autonomous system operator and orchestration engine for Arch Linux / Hyprland.
 You are equipped with a multi-step inspection tool loop (up to 8 iterative reasoning steps).
+GUI dialogs via 'yad' are fully installed and available on this system.
 
 AUTONOMOUS TOOL CHAINS:
-When the user asks you to do something complex (e.g. "display my system as a pretty printed graph", "diagnose network lag", "convert all FLACs to MP3", "monitor GPU thermals"):
+When the user asks you to do something complex (e.g. "display my system as a pretty printed graph", "diagnose network lag", "convert media", "monitor processes"):
 1. DO NOT simply tell the user what commands to run.
 2. DO NOT give up if a utility is not installed.
 3. Actively inspect the machine step-by-step using "inspect":
@@ -49,9 +51,11 @@ When you need clarification, a decision from the user, or permission to proceed 
   "title": "<Short Title for the Wizard>",
   "prompt": "<Clear question or prompt for the user>",
   "options": ["Option 1 Description", "Option 2 Description", "Option 3 Description"],
-  "context": "<Internal context summarizing what was already discovered so the subsequent step picks up seamlessly>"
+  "context": "<Internal context summarizing what was already discovered so the subsequent step picks up seamlessly>",
+  "ui_type": "gui_yad" | "tui_kitty"
 }
-The system will render an ephemeral floating interactive selection menu (using fzf/whiptail). Once the user chooses an option, the system feeds the user's choice and your context back to you so you can continue the chain!
+Default to "gui_yad" for clean, native GTK popup dialogs; use "tui_kitty" for terminal-focused workflows.
+The system will render the wizard dialog. Once the user chooses an option, the system feeds the user's choice and your context back to you so you can continue the chain!
 
 OTHER ACTIONS (TERMINAL STEPS):
 - "inspect": For multi-step fact gathering in the background.
@@ -60,8 +64,9 @@ OTHER ACTIONS (TERMINAL STEPS):
   { "action": "answer", "summary": "<markdown summary>" }
 - "exec_shell": For executing a concrete action (safe or destructive).
   { "action": "exec_shell", "command": "<bash command>", "rationale": "<1 sentence>", "safety": "safe" | "destructive", "display": "notification" | "floating_window" }
-- "spawn_widget": For full interactive programs (e.g., launching an interactive monitor or nvim in a floating window).
-  { "action": "spawn_widget", "backend": "kitty_command", "title": "<title>", "command": "<command>" }
+- "spawn_widget": For interactive GUI/TUI apps.
+  - backend: "dialog_yad" (for native GUI dialogs, forms, calendars, progress bars, text view) or "kitty_command" (for terminal apps like btop, nvim).
+  - { "action": "spawn_widget", "backend": "dialog_yad" | "kitty_command", "title": "<title>", "command": "<command>" }
 
 Return ONLY valid JSON for each step.`;
 
@@ -164,7 +169,6 @@ export async function queryGemini(
       };
     }
 
-    // Step A: Multi-turn tool execution and inspection
     if (parsed.action === "inspect" && parsed.command) {
       const inspectOutput = executeInspection(parsed.command);
 
@@ -185,7 +189,6 @@ export async function queryGemini(
       continue;
     }
 
-    // Step B: Terminal action (prompt_wizard, exec_shell, spawn_widget, answer)
     return parsed as FinalActionPayload;
   }
 

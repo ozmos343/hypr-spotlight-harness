@@ -89,14 +89,41 @@ function displayCardInKitty(title: string, content: string) {
 export function runInteractiveWizard(
   title: string,
   prompt: string,
-  options: string[]
+  options: string[],
+  uiType: "gui_yad" | "tui_kitty" = "gui_yad"
 ): string | null {
+  // If yad is installed and requested (or defaulted), use native GTK list dialog
+  if (uiType === "gui_yad") {
+    try {
+      const yadArgs = [
+        "--title=" + title,
+        "--text=" + prompt,
+        "--list",
+        "--column=Option",
+        "--width=560",
+        "--height=360",
+        "--center",
+        "--class=hypr-harness-floating",
+        "--button=Cancel:1",
+        "--button=Select:0",
+        ...options,
+      ];
+      const res = spawnSync("yad", yadArgs, { encoding: "utf-8" });
+      if (res.status === 0 && res.stdout) {
+        // yad returns "selection|"
+        const clean = res.stdout.replace(/\|.*$/, "").trim();
+        if (clean) return clean;
+      }
+      return null;
+    } catch {}
+  }
+
+  // TUI Kitty fallback with fzf
   const tmpChoiceFile = `/tmp/spotlight_wizard_${Date.now()}_choice.txt`;
   const optionsText = options.join("\n");
   const tmpOptsFile = `/tmp/spotlight_wizard_${Date.now()}_opts.txt`;
   fs.writeFileSync(tmpOptsFile, optionsText, "utf-8");
 
-  // Kitty floating TUI wizard powered by fzf
   const script = `
     printf "\\033]2;${title}\\007"
     echo -e "\\033[1;36m🔮 ${title}\\033[0m"
@@ -107,7 +134,6 @@ export function runInteractiveWizard(
     rm -f "${tmpOptsFile}"
   `;
 
-  // Spawn and wait for user selection
   spawnSync(
     "kitty",
     ["--class", "hypr-harness-floating", "--title", title, "bash", "-c", script],
@@ -138,24 +164,32 @@ export async function executeAction(action: FinalActionPayload): Promise<void> {
 
     case "exec_shell": {
       if (action.safety === "destructive") {
-        const confirmCmd = `
-          echo -e "\\033[1;31m⚠️  DESTRUCTIVE ACTION REQUESTED\\033[0m"
-          echo "=================================="
-          echo "Rationale: ${action.rationale}"
-          echo ""
-          echo "Command to run:"
-          echo "  ${action.command}"
-          echo "=================================="
-          read -p "Execute this command? [y/N] " yn
-          if [[ "$yn" =~ ^[Yy]$ ]]; then
-            echo ""
-            echo "Running: ${action.command}"
-            ${action.command}
+        // Confirmation dialog: offer native yad confirmation or fallback to terminal
+        const confirmScript = `
+          if command -v yad &>/dev/null; then
+            yad --title="Confirm Action" --text="⚠️  DESTRUCTIVE ACTION REQUESTED\\n\\nRationale: ${action.rationale}\\n\\nCommand:\\n${action.command}" --class=hypr-harness-floating --center --button="Cancel:1" --button="Execute:0"
+            if [ $? -eq 0 ]; then
+              ${action.command}
+            fi
           else
-            echo "Cancelled."
+            echo -e "\\033[1;31m⚠️  DESTRUCTIVE ACTION REQUESTED\\033[0m"
+            echo "=================================="
+            echo "Rationale: ${action.rationale}"
+            echo ""
+            echo "Command to run:"
+            echo "  ${action.command}"
+            echo "=================================="
+            read -p "Execute this command? [y/N] " yn
+            if [[ "$yn" =~ ^[Yy]$ ]]; then
+              echo ""
+              echo "Running: ${action.command}"
+              ${action.command}
+            else
+              echo "Cancelled."
+            fi
           fi
         `;
-        runInteractiveInKitty(`Confirm: ${action.rationale}`, confirmCmd);
+        runInteractiveInKitty(`Confirm: ${action.rationale}`, confirmScript);
       } else if (action.display === "floating_window") {
         runInteractiveInKitty(action.rationale || "System Inspector", action.command, true);
       } else {
@@ -191,9 +225,10 @@ export async function executeAction(action: FinalActionPayload): Promise<void> {
     case "spawn_widget": {
       const title = action.title || "Spotlight Widget";
       if (action.backend === "dialog_yad") {
+        // Native GTK Yad dialog
         const yadProc = spawn("bash", [
           "-c",
-          `if command -v yad &>/dev/null; then yad --title="${title}" --text-info <<< "${action.command}"; else kitty --class hypr-harness-floating -e bash -c "${action.command}; read -n 1 -s -r -p 'Press any key...'"; fi`,
+          `yad --title="${title}" --text-info --width=680 --height=450 --center --class=hypr-harness-floating <<< "$(${action.command})"`,
         ], { detached: true, stdio: "ignore" });
         yadProc.unref();
       } else {
@@ -203,7 +238,6 @@ export async function executeAction(action: FinalActionPayload): Promise<void> {
     }
 
     case "prompt_wizard": {
-      // Handled directly in cli.ts loop
       break;
     }
   }
