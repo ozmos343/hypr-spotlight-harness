@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import type { FinalActionPayload } from "./agent";
@@ -54,7 +54,6 @@ function runInteractiveInKitty(title: string, cmd: string, isInspector = false) 
 }
 
 function displayCardInKitty(title: string, content: string) {
-  // Format markdown with terminal ANSI color highlights
   const formatted = content
     .replace(/\*\*(.*?)\*\*/g, "\x1b[1;37m$1\x1b[0m")       // Bold bright
     .replace(/`([^`]+)`/g, "\x1b[1;33m$1\x1b[0m")          // Yellow code
@@ -87,12 +86,48 @@ function displayCardInKitty(title: string, content: string) {
   proc.unref();
 }
 
+export function runInteractiveWizard(
+  title: string,
+  prompt: string,
+  options: string[]
+): string | null {
+  const tmpChoiceFile = `/tmp/spotlight_wizard_${Date.now()}_choice.txt`;
+  const optionsText = options.join("\n");
+  const tmpOptsFile = `/tmp/spotlight_wizard_${Date.now()}_opts.txt`;
+  fs.writeFileSync(tmpOptsFile, optionsText, "utf-8");
+
+  // Kitty floating TUI wizard powered by fzf
+  const script = `
+    printf "\\033]2;${title}\\007"
+    echo -e "\\033[1;36m🔮 ${title}\\033[0m"
+    echo -e "\\033[1;37m${prompt}\\033[0m"
+    echo -e "\\033[1;30m──────────────────────────────────────────────────\\033[0m"
+    CHOICE=$(fzf --height 100% --reverse --header="Use arrow keys to select, Enter to confirm, ESC to cancel" < "${tmpOptsFile}")
+    echo "$CHOICE" > "${tmpChoiceFile}"
+    rm -f "${tmpOptsFile}"
+  `;
+
+  // Spawn and wait for user selection
+  spawnSync(
+    "kitty",
+    ["--class", "hypr-harness-floating", "--title", title, "bash", "-c", script],
+    { stdio: "inherit" }
+  );
+
+  let selected: string | null = null;
+  if (fs.existsSync(tmpChoiceFile)) {
+    const raw = fs.readFileSync(tmpChoiceFile, "utf-8").trim();
+    fs.unlinkSync(tmpChoiceFile);
+    if (raw) selected = raw;
+  }
+  return selected;
+}
+
 export async function executeAction(action: FinalActionPayload): Promise<void> {
   switch (action.action) {
     case "answer": {
       const text = action.summary.trim();
       const lineCount = text.split("\n").length;
-      // If answer is longer than 200 characters or more than 3 lines: display in floating window card
       if (text.length > 200 || lineCount > 3) {
         displayCardInKitty("Spotlight", text);
       } else {
@@ -164,6 +199,11 @@ export async function executeAction(action: FinalActionPayload): Promise<void> {
       } else {
         runInteractiveInKitty(title, action.command);
       }
+      break;
+    }
+
+    case "prompt_wizard": {
+      // Handled directly in cli.ts loop
       break;
     }
   }
