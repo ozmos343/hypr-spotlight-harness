@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import type { FinalActionPayload } from "./agent";
+import type { FinalActionPayload, DisplayConfig } from "./agent";
 
 function stripMarkdown(text: string): string {
   return text
@@ -16,35 +16,43 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
-function notify(title: string, message: string, urgency: "low" | "normal" | "critical" = "normal") {
+function notify(title: string, message: string, timeoutMs = 12000, urgency: "low" | "normal" | "critical" = "normal") {
   const cleanMsg = stripMarkdown(message);
-  spawn("notify-send", ["-a", "spotlight", "-u", urgency, title, cleanMsg], {
+  spawn("notify-send", ["-a", "spotlight", "-t", String(timeoutMs), "-u", urgency, title, cleanMsg], {
     detached: true,
     stdio: "ignore",
   }).unref();
 }
 
-function runInteractiveInKitty(title: string, cmd: string, isInspector = false) {
-  const script = isInspector
-    ? `
-      printf "\\033]2;${title}\\007"
-      echo -e "\\033[1;36m▶ ${title}\\033[0m"
-      echo -e "\\033[1;30m--------------------------------------------------\\033[0m"
-      ${cmd}
-      echo ""
-      echo -e "\\033[1;30m--------------------------------------------------\\033[0m"
-      read -n 1 -s -r -p "Press any key to close..."
-    `
-    : `
-      printf "\\033]2;${title}\\007"
-      ${cmd}
-      printf "\\n\\033[1;30mPress Enter to close...\\033[0m"
-      read -r
-    `;
+function runInteractiveInKitty(title: string, cmd: string, display?: DisplayConfig) {
+  const width = display?.width || 750;
+  const height = display?.height || 480;
+
+  const script = `
+    printf "\\033]2;${title}\\007"
+    echo -e "\\033[1;36m▶ ${title}\\033[0m"
+    echo -e "\\033[1;30m──────────────────────────────────────────────────\\033[0m"
+    ${cmd}
+    echo ""
+    echo -e "\\033[1;30m──────────────────────────────────────────────────\\033[0m"
+    read -n 1 -s -r -p "Press any key to close..."
+  `;
 
   const proc = spawn(
     "kitty",
-    ["--class", "hypr-harness-floating", "--title", title, "bash", "-c", script],
+    [
+      "--class",
+      "hypr-harness-floating",
+      "--title",
+      title,
+      "-o",
+      `initial_window_width=${width}`,
+      "-o",
+      `initial_window_height=${height}`,
+      "bash",
+      "-c",
+      script,
+    ],
     {
       detached: true,
       stdio: "ignore",
@@ -53,7 +61,10 @@ function runInteractiveInKitty(title: string, cmd: string, isInspector = false) 
   proc.unref();
 }
 
-function displayCardInKitty(title: string, content: string) {
+function displayCardInKitty(title: string, content: string, display?: DisplayConfig) {
+  const width = display?.width || 700;
+  const height = display?.height || 450;
+
   const formatted = content
     .replace(/\*\*(.*?)\*\*/g, "\x1b[1;37m$1\x1b[0m")       // Bold bright
     .replace(/`([^`]+)`/g, "\x1b[1;33m$1\x1b[0m")          // Yellow code
@@ -77,7 +88,19 @@ function displayCardInKitty(title: string, content: string) {
 
   const proc = spawn(
     "kitty",
-    ["--class", "hypr-harness-floating", "--title", title, "bash", "-c", script],
+    [
+      "--class",
+      "hypr-harness-floating",
+      "--title",
+      title,
+      "-o",
+      `initial_window_width=${width}`,
+      "-o",
+      `initial_window_height=${height}`,
+      "bash",
+      "-c",
+      script,
+    ],
     {
       detached: true,
       stdio: "ignore",
@@ -92,7 +115,6 @@ export function runInteractiveWizard(
   options: string[],
   uiType: "gui_yad" | "tui_kitty" = "gui_yad"
 ): string | null {
-  // If yad is installed and requested (or defaulted), use native GTK list dialog
   if (uiType === "gui_yad") {
     try {
       const yadArgs = [
@@ -100,17 +122,16 @@ export function runInteractiveWizard(
         "--text=" + prompt,
         "--list",
         "--column=Option",
-        "--width=560",
-        "--height=360",
+        "--width=580",
+        "--height=380",
         "--center",
-        "--class=hypr-harness-floating",
+        "--class=yad",
         "--button=Cancel:1",
         "--button=Select:0",
         ...options,
       ];
       const res = spawnSync("yad", yadArgs, { encoding: "utf-8" });
       if (res.status === 0 && res.stdout) {
-        // yad returns "selection|"
         const clean = res.stdout.replace(/\|.*$/, "").trim();
         if (clean) return clean;
       }
@@ -152,22 +173,39 @@ export function runInteractiveWizard(
 export async function executeAction(action: FinalActionPayload): Promise<void> {
   switch (action.action) {
     case "answer": {
-      const text = action.summary.trim();
-      const lineCount = text.split("\n").length;
-      if (text.length > 200 || lineCount > 3) {
-        displayCardInKitty("Spotlight", text);
+      const displayMode = action.display?.mode || "notification";
+      const timeout = action.display?.timeout_ms || 12000;
+      const title = action.display?.title || "Spotlight";
+
+      if (displayMode === "floating_card") {
+        displayCardInKitty(title, action.summary, action.display);
+      } else if (displayMode === "gui_dialog") {
+        const width = action.display?.width || 600;
+        const height = action.display?.height || 400;
+        const yadProc = spawn("yad", [
+          `--title=${title}`,
+          `--text=${action.summary}`,
+          `--width=${width}`,
+          `--height=${height}`,
+          "--center",
+          "--class=yad",
+          "--button=Close:0",
+        ], { detached: true, stdio: "ignore" });
+        yadProc.unref();
       } else {
-        notify("Spotlight", text);
+        notify(title, action.summary, timeout);
       }
       break;
     }
 
     case "exec_shell": {
+      const displayMode = action.display?.mode || "floating_card";
+      const title = action.display?.title || action.rationale;
+
       if (action.safety === "destructive") {
-        // Confirmation dialog: offer native yad confirmation or fallback to terminal
         const confirmScript = `
           if command -v yad &>/dev/null; then
-            yad --title="Confirm Action" --text="⚠️  DESTRUCTIVE ACTION REQUESTED\\n\\nRationale: ${action.rationale}\\n\\nCommand:\\n${action.command}" --class=hypr-harness-floating --center --button="Cancel:1" --button="Execute:0"
+            yad --title="Confirm Action" --text="⚠️  DESTRUCTIVE ACTION REQUESTED\\n\\nRationale: ${action.rationale}\\n\\nCommand:\\n${action.command}" --class=yad --center --button="Cancel:1" --button="Execute:0"
             if [ $? -eq 0 ]; then
               ${action.command}
             fi
@@ -189,11 +227,21 @@ export async function executeAction(action: FinalActionPayload): Promise<void> {
             fi
           fi
         `;
-        runInteractiveInKitty(`Confirm: ${action.rationale}`, confirmScript);
-      } else if (action.display === "floating_window") {
-        runInteractiveInKitty(action.rationale || "System Inspector", action.command, true);
+        runInteractiveInKitty(`Confirm: ${action.rationale}`, confirmScript, action.display);
+      } else if (displayMode === "floating_card") {
+        // Output of a command: display in configured floating window
+        runInteractiveInKitty(title, action.command, action.display);
+      } else if (displayMode === "gui_dialog") {
+        const width = action.display?.width || 680;
+        const height = action.display?.height || 450;
+        const yadProc = spawn("bash", [
+          "-c",
+          `yad --title="${title}" --text-info --width=${width} --height=${height} --center --class=yad <<< "$(${action.command})"`,
+        ], { detached: true, stdio: "ignore" });
+        yadProc.unref();
       } else {
-        notify("Spotlight", `Executing: ${action.rationale}`, "low");
+        // Background toggle/notification
+        notify("Spotlight", `Executing: ${action.rationale}`, 5000, "low");
         const proc = spawn("bash", ["-c", action.command]);
         let stdout = "";
         let stderr = "";
@@ -203,17 +251,13 @@ export async function executeAction(action: FinalActionPayload): Promise<void> {
 
         proc.on("close", (code) => {
           if (code === 0) {
-            const outLines = stdout.trim().split("\n");
-            if (outLines.length > 3 || stdout.trim().length > 200) {
-              runInteractiveInKitty(action.rationale, action.command, true);
-            } else {
-              const outSnippet = stdout.trim() ? stdout.trim() : "Done";
-              notify("Spotlight: Success", `${action.rationale}\n${outSnippet}`);
-            }
+            const outSnippet = stdout.trim() ? stdout.trim() : "Done";
+            notify("Spotlight: Success", `${action.rationale}\n${outSnippet}`, 10000);
           } else {
             notify(
               "Spotlight: Error",
               `Exit ${code}: ${stderr.trim() || stdout.trim() || "Failed"}`,
+              12000,
               "critical"
             );
           }
@@ -225,10 +269,9 @@ export async function executeAction(action: FinalActionPayload): Promise<void> {
     case "spawn_widget": {
       const title = action.title || "Spotlight Widget";
       if (action.backend === "dialog_yad") {
-        // Native GTK Yad dialog
         const yadProc = spawn("bash", [
           "-c",
-          `yad --title="${title}" --text-info --width=680 --height=450 --center --class=hypr-harness-floating <<< "$(${action.command})"`,
+          `yad --title="${title}" --text-info --width=680 --height=450 --center --class=yad <<< "$(${action.command})"`,
         ], { detached: true, stdio: "ignore" });
         yadProc.unref();
       } else {

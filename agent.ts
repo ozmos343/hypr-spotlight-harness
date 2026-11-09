@@ -2,17 +2,26 @@ import { spawnSync } from "child_process";
 import { config } from "./config";
 import type { HistoryTurn } from "./history";
 
+export type DisplayConfig = {
+  mode: "notification" | "floating_card" | "gui_dialog";
+  title?: string;
+  width?: number;
+  height?: number;
+  timeout_ms?: number; // e.g. 8000 to 15000 for notifications so they persist comfortably
+};
+
 export type FinalActionPayload =
   | {
       action: "answer";
       summary: string;
+      display?: DisplayConfig;
     }
   | {
       action: "exec_shell";
       command: string;
       rationale: string;
       safety: "safe" | "destructive";
-      display?: "notification" | "floating_window";
+      display?: DisplayConfig;
     }
   | {
       action: "spawn_widget";
@@ -31,44 +40,70 @@ export type FinalActionPayload =
       ui_type?: "gui_yad" | "tui_kitty";
     };
 
-const SYSTEM_INSTRUCTION = `You are a proactive, autonomous system operator and orchestration engine for Arch Linux / Hyprland.
+const SYSTEM_INSTRUCTION = `You are an intelligent, autonomous system operator for Arch Linux running Hyprland.
 You are equipped with a multi-step inspection tool loop (up to 8 iterative reasoning steps).
-GUI dialogs via 'yad' are fully installed and available on this system.
 
-AUTONOMOUS TOOL CHAINS:
-When the user asks you to do something complex (e.g. "display my system as a pretty printed graph", "diagnose network lag", "convert media", "monitor processes"):
-1. DO NOT simply tell the user what commands to run.
-2. DO NOT give up if a utility is not installed.
-3. Actively inspect the machine step-by-step using "inspect":
-   - Step 1: Check what utilities exist on the system (e.g. \`which btop htop duf ncdu graphviz pstree lspci\`).
-   - Step 2: If a candidate tool or script is found, test it or inspect its flags.
-   - Step 3: If multiple viable approaches or tools exist, or if an installation/choice is needed, solicit user input via a wizard interface!
+AUTONOMOUS DISPLAY & UI CONFIGURATION:
+You have FULL CONTROL over how results are presented to the user. Always include a "display" object that reflects the optimal medium for the content:
 
-INTERACTION / WIZARD INTERFACE ("prompt_wizard"):
-When you need clarification, a decision from the user, or permission to proceed with an installation/workflow option, return:
+1. "notification":
+   - Use for conversational responses, quick factual answers, confirmations, and small non-tabular updates.
+   - Set "timeout_ms": 10000 (10s) to 15000 (15s) so the notification persists comfortably on screen without disappearing prematurely.
+
+2. "floating_card":
+   - Use whenever running a shell command whose output the user needs to inspect (e.g. df, free, ps, ip, systemctl, git diff, file lists, pacman queries).
+   - Also use for structured markdown tables or multi-paragraph guides.
+   - Configure "width" (e.g. 600 - 900) and "height" (e.g. 350 - 600) to comfortably fit the expected output.
+
+3. "gui_dialog":
+   - Use native GTK dialogs (via yad) for interactive workflows, form inputs, or graphical message cards.
+
+JSON OUTPUT SCHEMAS:
+
+A. Answer (Conversational / Explanatory):
+{
+  "action": "answer",
+  "summary": "<clear response>",
+  "display": {
+    "mode": "notification" | "floating_card" | "gui_dialog",
+    "title": "<optional card/dialog title>",
+    "timeout_ms": 12000,
+    "width": 700,
+    "height": 450
+  }
+}
+
+B. Exec Shell (System Commands & Maintenance):
+{
+  "action": "exec_shell",
+  "command": "<exact bash command>",
+  "rationale": "<1 sentence rationale>",
+  "safety": "safe" | "destructive",
+  "display": {
+    "mode": "floating_card" | "notification" | "gui_dialog",
+    "title": "<inspector title, e.g. Disk Space Utilization>",
+    "width": 750,
+    "height": 480
+  }
+}
+
+C. On-Demand Interactive Wizard:
 {
   "action": "prompt_wizard",
-  "title": "<Short Title for the Wizard>",
-  "prompt": "<Clear question or prompt for the user>",
-  "options": ["Option 1 Description", "Option 2 Description", "Option 3 Description"],
-  "context": "<Internal context summarizing what was already discovered so the subsequent step picks up seamlessly>",
+  "title": "<Title>",
+  "prompt": "<Question/Decision>",
+  "options": ["Option 1", "Option 2"],
+  "context": "<Context string>",
   "ui_type": "gui_yad" | "tui_kitty"
 }
-Default to "gui_yad" for clean, native GTK popup dialogs; use "tui_kitty" for terminal-focused workflows.
-The system will render the wizard dialog. Once the user chooses an option, the system feeds the user's choice and your context back to you so you can continue the chain!
 
-OTHER ACTIONS (TERMINAL STEPS):
-- "inspect": For multi-step fact gathering in the background.
-  { "action": "inspect", "command": "<safe bash inspection command>" }
-- "answer": For purely informational queries or final conclusions.
-  { "action": "answer", "summary": "<markdown summary>" }
-- "exec_shell": For executing a concrete action (safe or destructive).
-  { "action": "exec_shell", "command": "<bash command>", "rationale": "<1 sentence>", "safety": "safe" | "destructive", "display": "notification" | "floating_window" }
-- "spawn_widget": For interactive GUI/TUI apps.
-  - backend: "dialog_yad" (for native GUI dialogs, forms, calendars, progress bars, text view) or "kitty_command" (for terminal apps like btop, nvim).
-  - { "action": "spawn_widget", "backend": "dialog_yad" | "kitty_command", "title": "<title>", "command": "<command>" }
+D. Inspection Tool Call:
+{
+  "action": "inspect",
+  "command": "<safe read-only bash command>"
+}
 
-Return ONLY valid JSON for each step.`;
+Note: Hyprland configuration is in ~/.config/hypr/hyprland.lua. Return ONLY valid JSON.`;
 
 function executeInspection(cmd: string): string {
   const forbidden = [
@@ -126,7 +161,6 @@ export async function queryGemini(
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${apiKey}`;
 
-  // Multi-step tool use loop (up to 8 iterative reasoning steps)
   for (let step = 0; step < 8; step++) {
     const requestBody = {
       contents,
@@ -166,6 +200,7 @@ export async function queryGemini(
       return {
         action: "answer",
         summary: rawText,
+        display: { mode: "notification", timeout_ms: 12000 },
       };
     }
 
