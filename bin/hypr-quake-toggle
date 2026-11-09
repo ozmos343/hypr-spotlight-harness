@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+HARNESS_DIR="$HOME/.config/hypr/harness"
+CONSOLE_CLASS="hypr-quake-operator"
+
+# Check if the quake console is already running
+if ! hyprctl clients | grep -q "class: ${CONSOLE_CLASS}"; then
+  # Spawn it directly onto special:quake_operator
+  hyprctl dispatch 'hl.dsp.exec_cmd("kitty --class hypr-quake-operator --title \"Quake Operator Console\" bun run '"$HARNESS_DIR"'/quake_console.ts")'
+  sleep 0.2
+fi
+
+# Toggle visibility of the special workspace
+hyprctl dispatch togglespecialworkspace quake_operator
