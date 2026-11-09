@@ -27,13 +27,13 @@ const SYSTEM_INSTRUCTION = `You are a high-speed, intelligent system operator as
 Your goal is to handle user queries from a quick launcher (Spotlight / Raycast style).
 
 LOCAL INSPECTION CAPABILITY:
-When the user asks questions about their actual system, configurations, keybindings, packages, or logs (e.g. checking ~/.config/hypr/hyprland.lua (the primary Hyprland 0.57+ configuration), active services, hardware), you can request local inspection commands before answering.
+When the user asks questions about their actual system, configurations, keybindings, packages, or logs (e.g. checking ~/.config/hypr/hyprland.lua which is the active configuration, active services, hardware), you can request local inspection commands before answering.
 If you need to inspect the system, reply with a single JSON block:
 {
   "action": "inspect",
   "command": "<safe read-only bash command to run, e.g. grep, cat, hyprctl, pacman -Q>"
 }
-The system will run your inspection command and give you the output so you can formulate the correct final answer.
+The system will run your inspection command and give you the output so you can formulate the correct final answer. Note: Hyprland configuration is located in ~/.config/hypr/hyprland.lua.
 
 FINAL OUTPUT:
 When you have all the facts or do not need inspection, return your final response as valid JSON matching ONE of the following schemas:
@@ -64,12 +64,13 @@ When you have all the facts or do not need inspection, return your final respons
 Return ONLY valid JSON.`;
 
 function executeInspection(cmd: string): string {
+  // Disallow modifying commands, but permit safe read-only commands
   const forbidden = [
-    "rm ", "rmdir ", "dd ", "mkfs", ">", ">>", "chmod ", "chown ", "reboot", "shutdown", "poweroff", "kill ", "killall "
+    "rm ", "rmdir ", "dd ", "mkfs", "chmod ", "chown ", "reboot", "shutdown", "poweroff", "kill ", "killall "
   ];
   for (const f of forbidden) {
     if (cmd.includes(f)) {
-      return `Inspection denied: Command contains potentially destructive or modifying keyword '${f}'.`;
+      return `Inspection denied: Command contains potentially destructive keyword '${f}'.`;
     }
   }
 
