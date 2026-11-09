@@ -13,12 +13,29 @@ const C_MAGENTA = "\x1b[1;35m";
 const C_DIM = "\x1b[2m";
 const C_RED = "\x1b[1;31m";
 
+const COMMANDS = [
+  { cmd: "/history", desc: "View persistent command audit log" },
+  { cmd: "/clear",   desc: "Reset current rolling conversation buffer" },
+  { cmd: "/status",  desc: "Display system stats (uptime, mem, load)" },
+  { cmd: "/help",    desc: "Display command help" },
+  { cmd: "/exit",    desc: "Close the console window" },
+  { cmd: "/reset",   desc: "Reset current session context" },
+];
+
+function completer(line: string): [string[], string] {
+  if (line.startsWith("/")) {
+    const hits = COMMANDS.map((c) => c.cmd).filter((c) => c.startsWith(line));
+    return [hits.length ? hits : COMMANDS.map((c) => c.cmd), line];
+  }
+  return [[], line];
+}
+
 function renderHeader() {
   console.clear();
   console.log(`${C_CYAN}┌─────────────────────────────────────────────────────────────┐${C_RESET}`);
   console.log(`${C_CYAN}│${C_RESET} ${C_BOLD}HYPR-OPERATOR :: QUAKE SLIDE-IN CONSOLE${C_RESET}                   ${C_CYAN}│${C_RESET}`);
   console.log(`${C_CYAN}│${C_RESET} ${C_DIM}Continuous multi-turn system operator harness (Gemini 3.5)  ${C_RESET} ${C_CYAN}│${C_RESET}`);
-  console.log(`${C_CYAN}│${C_RESET} ${C_YELLOW}Commands:${C_RESET} /history, /clear, /status, /help, /exit          ${C_CYAN}│${C_RESET}`);
+  console.log(`${C_CYAN}│${C_RESET} ${C_YELLOW}Tab completion:${C_RESET} Type '/' and press Tab for slash commands ${C_CYAN}│${C_RESET}`);
   console.log(`${C_CYAN}└─────────────────────────────────────────────────────────────┘${C_RESET}\n`);
 }
 
@@ -51,6 +68,8 @@ async function main() {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
+    completer,
+    terminal: true,
     prompt: `${C_GREEN}operator❯${C_RESET} `,
   });
 
@@ -91,12 +110,11 @@ async function main() {
     }
 
     if (raw === "/help") {
-      console.log(`\n${C_BOLD}Quake Operator Commands:${C_RESET}`);
-      console.log(`  ${C_YELLOW}/history${C_RESET}   - View persistent command history`);
-      console.log(`  ${C_YELLOW}/clear${C_RESET}     - Reset current session buffer`);
-      console.log(`  ${C_YELLOW}/status${C_RESET}    - Show system quick stats (uptime, mem, load)`);
-      console.log(`  ${C_YELLOW}/exit${C_RESET}      - Close console`);
-      console.log(`  Or enter any natural language instruction (e.g. "show disk usage", "find large files in ~", "inspect hyprland.lua")\n`);
+      console.log(`\n${C_BOLD}Quake Operator Slash Commands:${C_RESET}`);
+      for (const c of COMMANDS) {
+        console.log(`  ${C_YELLOW}${c.cmd.padEnd(12)}${C_RESET} - ${c.desc}`);
+      }
+      console.log(`\n  ${C_DIM}Or enter any natural language instruction (e.g. "show disk usage", "inspect hyprland.lua")${C_RESET}\n`);
       rl.prompt();
       return;
     }
@@ -150,8 +168,7 @@ async function main() {
           action,
         });
 
-        // Print response directly in the console scrollback
-        console.log(`\r${C_RESET}${" ".repeat(30)}\r`); // clear "thinking..." line
+        console.log(`\r${C_RESET}${" ".repeat(30)}\r`);
 
         if (action.action === "answer") {
           console.log(`${C_CYAN}✦ Operator:${C_RESET}`);
@@ -159,7 +176,6 @@ async function main() {
         } else if (action.action === "exec_shell") {
           console.log(`${C_GREEN}▶ Action: ${action.rationale}${C_RESET}`);
           console.log(`${C_DIM}$ ${action.command}${C_RESET}`);
-          // Execute directly and print stdout/stderr inline in the console
           const proc = Bun.spawnSync(["bash", "-c", action.command]);
           const out = proc.stdout.toString().trim();
           const err = proc.stderr.toString().trim();
