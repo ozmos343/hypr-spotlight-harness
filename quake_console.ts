@@ -183,8 +183,8 @@ async function main() {
           console.log(`${C_GREEN}▶ Action: ${action.rationale}${C_RESET}`);
           console.log(`${C_DIM}$ ${action.command}${C_RESET}`);
 
-          // Guard against destructive actions or hazard loops: route through executor's confirmation barrier
-          if (action.safety === "destructive" || action.display?.mode === "gui_dialog" || action.display?.mode === "floating_card") {
+          // 1. Destructive actions or GUI dialogs (e.g. yad) always go through executor's confirmation / GUI spawner
+          if (action.safety === "destructive" || action.display?.mode === "gui_dialog") {
             await executeAction(action);
             saveTurn({
               timestamp: Date.now(),
@@ -201,11 +201,10 @@ async function main() {
             break;
           }
 
+          // 2. Run in-console first
           const proc = Bun.spawnSync(["bash", "-c", action.command]);
           const out = proc.stdout.toString().trim();
           const err = proc.stderr.toString().trim();
-
-          if (out) console.log(out);
 
           if (proc.exitCode !== 0) {
             // Error occurred: propagate failure back to Gemini for autonomous self-healing
@@ -233,8 +232,23 @@ async function main() {
             continue;
           }
 
-          // Command succeeded
-          console.log("");
+          // 3. Command succeeded
+          const lineCount = out ? out.split("\n").length : 0;
+          const isExcessivelyLong = lineCount > 25 || out.length > 2500;
+
+          if (isExcessivelyLong && action.display?.mode === "floating_card") {
+            // Output is too large to comfortably view inline in the drop-down; spawn dedicated floating card
+            console.log(`${C_DIM}(Output is ${lineCount} lines; opened in floating viewer window)${C_RESET}\n`);
+            await executeAction(action);
+          } else {
+            // Pure text output that comfortably fits in the console: print directly
+            if (out) {
+              console.log(`${out}\n`);
+            } else {
+              console.log(`${C_DIM}(Command completed with no output)${C_RESET}\n`);
+            }
+          }
+
           saveTurn({
             timestamp: Date.now(),
             user: raw,
