@@ -1,6 +1,5 @@
 import { spawn } from "child_process";
 import * as fs from "fs";
-import { transcribeAudio } from "./voice";
 
 // Audio recording parameters
 const SAMPLE_RATE = 16000;
@@ -9,11 +8,10 @@ const CHANNELS = 1;
 const FRAME_DURATION_MS = 100;
 const FRAME_BYTES = (SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNELS * FRAME_DURATION_MS) / 1000; // 3200 bytes
 
-// Silence detection thresholds
-const SILENCE_RMS_THRESHOLD = 350; // RMS amplitude below which audio is considered silence
-const SILENCE_TIMEOUT_MS = 1400;   // 1.4 seconds of continuous silence after speech to auto-stop
-const MAX_RECORDING_MS = 25000;    // 25s hard cutoff to prevent runaway recordings
-const MIN_SPEECH_FRAMES = 3;       // Must hear at least ~300ms of non-silence before silence detection activates
+// Silence detection timings
+const SILENCE_TIMEOUT_MS = 1200; // 1.2s of continuous silence after speech -> auto-stop
+const MAX_RECORDING_MS = 25000;  // 25s hard safety cutoff
+const CALIBRATION_FRAMES = 3;    // First 300ms used to measure live ambient noise floor
 
 function computeRMS(buffer: Buffer): number {
   let sumSquares = 0;
@@ -31,13 +29,13 @@ function writeWavHeader(dataLength: number, sampleRate = 16000, channels = 1): B
   header.writeUInt32LE(36 + dataLength, 4);
   header.write("WAVE", 8);
   header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16); // Subchunk1Size
+  header.writeUInt32LE(16, 16);
   header.writeUInt16LE(1, 20);  // PCM
   header.writeUInt16LE(channels, 22);
   header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * channels * 2, 28); // ByteRate
-  header.writeUInt16LE(channels * 2, 32);              // BlockAlign
-  header.writeUInt16LE(16, 34);                        // BitsPerSample
+  header.writeUInt32LE(sampleRate * channels * 2, 28);
+  header.writeUInt16LE(channels * 2, 32);
+  header.writeUInt16LE(16, 34);
   header.write("data", 36);
   header.writeUInt32LE(dataLength, 40);
   return header;
@@ -50,8 +48,11 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
   let silenceDurationMs = 0;
   const startTime = Date.now();
 
+  let ambientFloor = 0;
+  let calibrationSamples = 0;
+  let dynamicThreshold = 12000; // conservative fallback until calibrated
+
   return new Promise((resolve, reject) => {
-    // Record raw 16kHz 16-bit mono PCM via ffmpeg or pw-record
     const recorder = spawn("ffmpeg", [
       "-f", "pulse",
       "-i", "default",
@@ -92,24 +93,38 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
 
         const rms = computeRMS(frame);
 
-        if (rms > SILENCE_RMS_THRESHOLD) {
+        // 1. Initial 300ms calibration phase
+        if (calibrationSamples < CALIBRATION_FRAMES) {
+          ambientFloor += rms;
+          calibrationSamples++;
+          if (calibrationSamples === CALIBRATION_FRAMES) {
+            ambientFloor = ambientFloor / CALIBRATION_FRAMES;
+            // Speech threshold set to 1.6x the measured ambient noise floor or +4500 RMS
+            dynamicThreshold = Math.max(ambientFloor * 1.6, ambientFloor + 4500);
+          }
+          continue;
+        }
+
+        // 2. Active speech detection
+        if (rms > dynamicThreshold) {
           speechFrames++;
-          if (speechFrames >= MIN_SPEECH_FRAMES) {
+          if (speechFrames >= 2) { // 200ms of speech triggers active speech mode
             speechDetected = true;
           }
           silenceDurationMs = 0;
         } else {
+          // If speech was previously active and current RMS is back down near ambient
           if (speechDetected) {
             silenceDurationMs += FRAME_DURATION_MS;
             if (silenceDurationMs >= SILENCE_TIMEOUT_MS) {
-              // Silence threshold reached after speech -> Auto-stop!
+              // User finished speaking! Auto-stop immediately
               finish();
               return;
             }
           }
         }
 
-        // Hard timeout
+        // 3. Hard safety cutoff
         if (Date.now() - startTime >= MAX_RECORDING_MS) {
           finish();
           return;
@@ -124,13 +139,11 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
       }
     });
 
-    // Handle early cancellation if parent kills us
     process.on("SIGINT", () => finish());
     process.on("SIGTERM", () => finish());
   });
 }
 
-// When executed directly
 if (import.meta.main) {
   const targetFile = process.argv[2] || "/tmp/hypr-voice-input.wav";
   const ok = await recordVoiceWithVAD(targetFile);
