@@ -128,6 +128,10 @@ async function main() {
       return;
     }
 
+    // Reload shared buffer so commands run in Spotlight (SUPER + SPACE) immediately sync here
+    const currentBuffer = loadRollingBuffer();
+    const sessionHistory = currentBuffer.length > 0 ? currentBuffer : loadRollingBuffer();
+
     process.stdout.write(`${C_DIM}thinking & planning...${C_RESET}\r`);
 
     try {
@@ -178,6 +182,25 @@ async function main() {
         if (action.action === "exec_shell") {
           console.log(`${C_GREEN}▶ Action: ${action.rationale}${C_RESET}`);
           console.log(`${C_DIM}$ ${action.command}${C_RESET}`);
+
+          // If the agent requested a GUI dialog or a floating card window for this output, route through executeAction
+          const displayMode = action.display?.mode;
+          if (displayMode === "gui_dialog" || displayMode === "floating_card") {
+            await executeAction(action);
+            saveTurn({
+              timestamp: Date.now(),
+              user: raw,
+              action,
+              outputSummary: `Displayed via ${displayMode}`,
+            });
+            sessionHistory.push({
+              timestamp: Date.now(),
+              user: raw,
+              action,
+              outputSummary: `Displayed via ${displayMode}`,
+            });
+            break;
+          }
 
           const proc = Bun.spawnSync(["bash", "-c", action.command]);
           const out = proc.stdout.toString().trim();

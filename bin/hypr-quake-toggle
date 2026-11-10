@@ -4,21 +4,20 @@ set -eo pipefail
 HARNESS_DIR="$HOME/.config/hypr/harness"
 CONSOLE_CLASS="hypr-quake-operator"
 
-# Check if special workspace 'quake_operator' is currently focused / active
-ACTIVE_SPECIAL=$(hyprctl monitors -j | jq -r '.[0].specialWorkspace.name // empty')
+ACTIVE_CLASS=$(hyprctl activewindow -j 2>/dev/null | jq -r '.class // empty')
+ACTIVE_WS=$(hyprctl activewindow -j 2>/dev/null | jq -r '.workspace.name // empty')
+SPECIAL_WS=$(hyprctl monitors -j 2>/dev/null | jq -r '.[0].specialWorkspace.name // empty')
 
-if [[ "$ACTIVE_SPECIAL" == "special:quake_operator" ]]; then
-  # Already visible and active: toggle it closed
-  hyprctl dispatch togglespecialworkspace quake_operator
+if [[ "$ACTIVE_CLASS" == "$CONSOLE_CLASS" || "$ACTIVE_WS" == "special:quake_operator" || "$SPECIAL_WS" == "special:quake_operator" ]]; then
+  hyprctl dispatch 'hl.dsp.workspace.toggle_special("quake_operator")'
   exit 0
 fi
 
-# Not currently visible: ensure the kitty process is running
+# If not running at all, spawn it
 if ! hyprctl clients | grep -q "class: ${CONSOLE_CLASS}"; then
   hyprctl dispatch 'hl.dsp.exec_cmd("[workspace special:quake_operator] kitty --class hypr-quake-operator --title \"Quake Operator Console\" bun run '"$HARNESS_DIR"'/quake_console.ts")'
   sleep 0.25
 fi
 
-# Show the special workspace and focus it
-hyprctl dispatch togglespecialworkspace quake_operator
-hyprctl dispatch focuswindow "class:${CONSOLE_CLASS}"
+# Bring up the special workspace
+hyprctl dispatch 'hl.dsp.workspace.toggle_special("quake_operator")'

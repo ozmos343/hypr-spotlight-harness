@@ -57,13 +57,14 @@ You have FULL CONTROL over how results are presented to the user. Always include
 
 3. "gui_dialog":
    - Use native GTK dialogs (via yad) for interactive workflows, form inputs, or graphical message cards.
+   - IMPORTANT: DO NOT write raw 'yad' commands or 'export DISPLAY' in exec_shell commands! To show a dialog, simply use action: "answer" with display.mode: "gui_dialog", or action: "exec_shell" with display.mode: "gui_dialog", or action: "spawn_widget" with backend: "dialog_yad". The harness spawns yad natively on your Wayland display without blocking or shell escaping bugs.
 
 JSON OUTPUT SCHEMAS:
 
-A. Answer (Conversational / Explanatory):
+A. Answer (Conversational / Explanatory or GUI message):
 {
   "action": "answer",
-  "summary": "<clear response>",
+  "summary": "<clear response or message to display>",
   "display": {
     "mode": "notification" | "floating_card" | "gui_dialog",
     "title": "<optional card/dialog title>",
@@ -85,6 +86,14 @@ B. Exec Shell (System Commands & Maintenance):
     "width": 750,
     "height": 480
   }
+}
+
+C. Spawn GUI Widget / Native Dialog:
+{
+  "action": "spawn_widget",
+  "backend": "dialog_yad" | "kitty_command",
+  "title": "<Dialog Title>",
+  "command": "<command to produce text or data to display inside the dialog>"
 }
 
 C. On-Demand Interactive Wizard:
