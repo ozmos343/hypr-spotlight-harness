@@ -1,4 +1,3 @@
-import * as readline from "readline";
 import * as fs from "fs";
 import * as path from "path";
 import { queryGemini, type FinalActionPayload } from "./agent";
@@ -14,6 +13,7 @@ const C_YELLOW = "\x1b[1;33m";
 const C_MAGENTA = "\x1b[1;35m";
 const C_DIM = "\x1b[2m";
 const C_RED = "\x1b[1;31m";
+const C_BG_SELECT = "\x1b[48;5;238m\x1b[1;36m";
 
 const COMMANDS = [
   { cmd: "/history", desc: "View persistent command audit log" },
@@ -25,42 +25,44 @@ const COMMANDS = [
   { cmd: "/reset",   desc: "Reset current session context" },
 ];
 
-function completer(line: string): [string[], string] {
-  // 1. Slash commands autocomplete
-  if (line.startsWith("/")) {
-    const hits = COMMANDS.map((c) => c.cmd).filter((c) => c.startsWith(line));
-    return [hits.length ? hits : COMMANDS.map((c) => c.cmd), line];
+function getFileMatches(prefix: string): Array<{ text: string; desc: string }> {
+  let searchDir = process.cwd();
+  let searchBase = prefix;
+
+  if (prefix.startsWith("~")) {
+    const full = path.join(process.env.HOME || "", prefix.slice(1));
+    searchDir = prefix.includes("/") ? path.dirname(full) : (process.env.HOME || "");
+    searchBase = path.basename(prefix);
+  } else if (prefix.startsWith("/")) {
+    searchDir = path.dirname(prefix);
+    searchBase = path.basename(prefix);
+  } else if (prefix.includes("/")) {
+    searchDir = path.resolve(process.cwd(), path.dirname(prefix));
+    searchBase = path.basename(prefix);
   }
 
-  // 2. @ File Autocomplete
-  const atMatch = line.match(/(^|.*?\s)@([^\s]*)$/);
-  if (atMatch) {
-    const prefix = atMatch[2];
-    const baseDir = prefix.startsWith("/")
-      ? path.dirname(prefix)
-      : path.join(process.cwd(), path.dirname(prefix));
-    const searchBase = path.basename(prefix);
-
-    try {
-      if (fs.existsSync(baseDir)) {
-        const entries = fs.readdirSync(baseDir, { withFileTypes: true });
-        const matches: string[] = [];
-        for (const entry of entries) {
-          if (entry.name.startsWith(searchBase) || !searchBase) {
-            const relPath = prefix.includes("/")
-              ? path.join(path.dirname(prefix), entry.name)
-              : entry.name;
-            matches.push(`@${relPath}${entry.isDirectory() ? "/" : ""}`);
+  const results: Array<{ text: string; desc: string }> = [];
+  try {
+    if (fs.existsSync(searchDir)) {
+      const entries = fs.readdirSync(searchDir, { withFileTypes: true });
+      for (const e of entries) {
+        if (!searchBase || e.name.toLowerCase().startsWith(searchBase.toLowerCase())) {
+          const isDir = e.isDirectory();
+          let completionText = e.name;
+          if (prefix.includes("/")) {
+            completionText = path.join(path.dirname(prefix), e.name);
           }
-        }
-        if (matches.length > 0) {
-          return [matches, `@${prefix}`];
+          if (isDir) completionText += "/";
+          results.push({
+            text: `@${completionText}`,
+            desc: isDir ? "directory" : "file",
+          });
+          if (results.length >= 8) break;
         }
       }
-    } catch {}
-  }
-
-  return [[], line];
+    }
+  } catch {}
+  return results;
 }
 
 function resolveAtFileReferences(input: string): string {
@@ -85,42 +87,12 @@ function resolveAtFileReferences(input: string): string {
   });
 }
 
-function runInteractiveMenu(title: string, items: Array<{ id: string; desc: string }>): string | null {
-  const formatted = items.map((i) => `${i.id} - ${i.desc}`).join("\n");
-  const tmpIn = `/tmp/quake_menu_${Date.now()}_in.txt`;
-  const tmpOut = `/tmp/quake_menu_${Date.now()}_out.txt`;
-  fs.writeFileSync(tmpIn, formatted, "utf-8");
-
-  try {
-    const proc = Bun.spawnSync([
-      "fzf",
-      "--height=40%",
-      "--reverse",
-      `--header=${title}`,
-      "--prompt=Select > "
-    ], {
-      stdin: fs.openSync(tmpIn, "r"),
-      stdout: "pipe",
-      stderr: "inherit"
-    });
-
-    const chosen = proc.stdout.toString().trim();
-    if (chosen) {
-      return chosen.split(" - ")[0].trim();
-    }
-  } catch {} finally {
-    try { fs.unlinkSync(tmpIn); } catch {}
-    try { fs.unlinkSync(tmpOut); } catch {}
-  }
-  return null;
-}
-
 function renderHeader() {
   const currentModel = getCurrentModel();
   console.log(`${C_CYAN}┌─────────────────────────────────────────────────────────────┐${C_RESET}`);
   console.log(`${C_CYAN}│${C_RESET} ${C_BOLD}HYPR-OPERATOR :: QUAKE SLIDE-IN CONSOLE${C_RESET}                   ${C_CYAN}│${C_RESET}`);
   console.log(`${C_CYAN}│${C_RESET} ${C_DIM}Continuous multi-turn harness [Model: ${C_YELLOW}${currentModel}${C_DIM}]${C_RESET}     ${C_CYAN}│${C_RESET}`);
-  console.log(`${C_CYAN}│${C_RESET} ${C_YELLOW}Tab completion:${C_RESET} Type '/' for commands, '@' for file refs   ${C_CYAN}│${C_RESET}`);
+  console.log(`${C_CYAN}│${C_RESET} ${C_YELLOW}Inline Autocomplete:${C_RESET} Type '/' or '@' for instant popup menu  ${C_CYAN}│${C_RESET}`);
   console.log(`${C_CYAN}└─────────────────────────────────────────────────────────────┘${C_RESET}\n`);
 }
 
@@ -147,27 +119,222 @@ function renderRecentHistory(history: HistoryTurn[]) {
   console.log(`${C_DIM}─────────────────────────────────────────────────────────────${C_RESET}\n`);
 }
 
+/**
+ * Interactive Input Prompt with Live Pop-Up Autocomplete for / and @
+ */
+async function promptLine(promptStr: string): Promise<string> {
+  return new Promise((resolve) => {
+    let input = "";
+    let cursorPos = 0;
+    let selectedMenuIndex = 0;
+    let renderedPopupLines = 0;
+    const historyIndex = -1;
+
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+
+    const getPopupCandidates = (): { items: Array<{ text: string; desc: string }>; replaceStart: number } | null => {
+      // 1. Check if line starts with '/'
+      if (input.startsWith("/")) {
+        const query = input.slice(0, cursorPos);
+        const hits = COMMANDS.filter((c) => c.cmd.startsWith(query)).map((c) => ({
+          text: c.cmd,
+          desc: c.desc,
+        }));
+        if (hits.length > 0) {
+          return { items: hits, replaceStart: 0 };
+        }
+      }
+
+      // 2. Check for '@' symbol under or before cursor
+      const beforeCursor = input.slice(0, cursorPos);
+      const atMatch = beforeCursor.match(/(^|\s)@([^\s]*)$/);
+      if (atMatch) {
+        const atPrefix = atMatch[2];
+        const matchIndex = beforeCursor.lastIndexOf("@");
+        const matches = getFileMatches(atPrefix);
+        if (matches.length > 0) {
+          return { items: matches, replaceStart: matchIndex };
+        }
+      }
+
+      return null;
+    };
+
+    const redraw = () => {
+      // Clear previously rendered popup lines
+      if (renderedPopupLines > 0) {
+        for (let i = 0; i < renderedPopupLines; i++) {
+          process.stdout.write("\x1b[1B\x1b[2K"); // Move down 1 and clear line
+        }
+        process.stdout.write(`\x1b[${renderedPopupLines}A`); // Move back up
+        renderedPopupLines = 0;
+      }
+
+      // Move to beginning of input line and render prompt + text
+      process.stdout.write("\r\x1b[2K" + promptStr + input);
+
+      // Check popup suggestions
+      const popup = getPopupCandidates();
+      if (popup && popup.items.length > 0) {
+        if (selectedMenuIndex >= popup.items.length) {
+          selectedMenuIndex = popup.items.length - 1;
+        }
+        if (selectedMenuIndex < 0) selectedMenuIndex = 0;
+
+        renderedPopupLines = Math.min(popup.items.length, 6) + 1;
+
+        // Draw dropdown box
+        process.stdout.write("\n\x1b[2K" + `${C_DIM}┌─ Suggestions (Tab/Enter to apply, ↑/↓ to navigate) ─┐${C_RESET}`);
+        for (let i = 0; i < Math.min(popup.items.length, 6); i++) {
+          const item = popup.items[i];
+          const isSelected = i === selectedMenuIndex;
+          const prefix = isSelected ? `${C_BG_SELECT} › ` : "   ";
+          const suffix = isSelected ? `${C_RESET}` : "";
+          const textPart = item.text.padEnd(20);
+          process.stdout.write(`\n\x1b[2K${prefix}${textPart} ${C_DIM}${item.desc}${suffix}`);
+        }
+
+        // Return cursor to input position
+        process.stdout.write(`\x1b[${renderedPopupLines}A`);
+      }
+
+      // Position physical terminal cursor
+      const targetCol = promptStr.replace(/\x1b\[[0-9;]*m/g, "").length + cursorPos + 1;
+      process.stdout.write(`\r\x1b[${targetCol - 1}C`);
+    };
+
+    const cleanup = () => {
+      if (renderedPopupLines > 0) {
+        for (let i = 0; i < renderedPopupLines; i++) {
+          process.stdout.write("\x1b[1B\x1b[2K");
+        }
+        process.stdout.write(`\x1b[${renderedPopupLines}A`);
+        renderedPopupLines = 0;
+      }
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdin.removeAllListeners("data");
+    };
+
+    redraw();
+
+    process.stdin.on("data", (chunk: Buffer) => {
+      const key = chunk.toString();
+
+      // Ctrl + C / Ctrl + D -> Exit
+      if (key === "\u0003" || key === "\u0004") {
+        cleanup();
+        process.stdout.write("\n");
+        process.exit(0);
+      }
+
+      // Enter key
+      if (key === "\r" || key === "\n") {
+        const popup = getPopupCandidates();
+        // If popup is active and user presses Enter on a slash command or file, complete it first
+        if (popup && popup.items.length > 0 && selectedMenuIndex >= 0) {
+          const item = popup.items[selectedMenuIndex];
+          input = input.slice(0, popup.replaceStart) + item.text + (item.text.endsWith("/") ? "" : " ");
+          cursorPos = input.length;
+          selectedMenuIndex = 0;
+          redraw();
+          return;
+        }
+
+        cleanup();
+        process.stdout.write("\n");
+        resolve(input);
+        return;
+      }
+
+      // Tab key -> autocomplete selected item
+      if (key === "\t") {
+        const popup = getPopupCandidates();
+        if (popup && popup.items.length > 0) {
+          const item = popup.items[selectedMenuIndex];
+          input = input.slice(0, popup.replaceStart) + item.text + (item.text.endsWith("/") ? "" : " ");
+          cursorPos = input.length;
+          selectedMenuIndex = 0;
+          redraw();
+          return;
+        }
+      }
+
+      // Arrow Up -> Navigate popup or history
+      if (key === "\x1b[A") {
+        const popup = getPopupCandidates();
+        if (popup && popup.items.length > 0) {
+          selectedMenuIndex = (selectedMenuIndex - 1 + popup.items.length) % popup.items.length;
+          redraw();
+          return;
+        }
+      }
+
+      // Arrow Down -> Navigate popup
+      if (key === "\x1b[B") {
+        const popup = getPopupCandidates();
+        if (popup && popup.items.length > 0) {
+          selectedMenuIndex = (selectedMenuIndex + 1) % popup.items.length;
+          redraw();
+          return;
+        }
+      }
+
+      // Arrow Left
+      if (key === "\x1b[D") {
+        if (cursorPos > 0) cursorPos--;
+        redraw();
+        return;
+      }
+
+      // Arrow Right
+      if (key === "\x1b[C") {
+        if (cursorPos < input.length) cursorPos++;
+        redraw();
+        return;
+      }
+
+      // Backspace
+      if (key === "\x7f" || key === "\b") {
+        if (cursorPos > 0) {
+          input = input.slice(0, cursorPos - 1) + input.slice(cursorPos);
+          cursorPos--;
+          selectedMenuIndex = 0;
+        }
+        redraw();
+        return;
+      }
+
+      // Escape -> close popup
+      if (key === "\x1b") {
+        selectedMenuIndex = -1;
+        redraw();
+        return;
+      }
+
+      // Regular characters
+      if (key.length === 1 && key >= " ") {
+        input = input.slice(0, cursorPos) + key + input.slice(cursorPos);
+        cursorPos++;
+        selectedMenuIndex = 0;
+        redraw();
+        return;
+      }
+    });
+  });
+}
+
 async function main() {
   renderHeader();
   const sessionHistory: HistoryTurn[] = loadRollingBuffer();
   renderRecentHistory(sessionHistory);
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    completer,
-    terminal: true,
-    prompt: `${C_GREEN}operator❯${C_RESET} `,
-  });
+  while (true) {
+    const promptStr = `${C_GREEN}operator❯${C_RESET} `;
+    const raw = (await promptLine(promptStr)).trim();
 
-  rl.prompt();
-
-  rl.on("line", async (line) => {
-    let raw = line.trim();
-    if (!raw) {
-      rl.prompt();
-      return;
-    }
+    if (!raw) continue;
 
     if (raw === "/exit" || raw === "/quit") {
       console.log(`${C_DIM}Closing console...${C_RESET}`);
@@ -180,8 +347,7 @@ async function main() {
       console.clear();
       renderHeader();
       console.log(`${C_YELLOW}Session history reset.${C_RESET}\n`);
-      rl.prompt();
-      return;
+      continue;
     }
 
     if (raw === "/history") {
@@ -192,8 +358,7 @@ async function main() {
         console.log(`• ${C_DIM}[${d}]${C_RESET} ${C_BOLD}${r.user}${C_RESET} -> ${r.action.action === "exec_shell" ? r.action.command : r.action.action}`);
       }
       console.log("");
-      rl.prompt();
-      return;
+      continue;
     }
 
     if (raw === "/model" || raw.startsWith("/model ")) {
@@ -202,17 +367,20 @@ async function main() {
         setModel(target);
         console.log(`\n${C_GREEN}✓ Active model updated to: ${C_BOLD}${target}${C_RESET}\n`);
       } else {
-        const choice = runInteractiveMenu(
-          "Select Gemini Model (ESC to cancel)",
-          SUPPORTED_MODELS.map((m) => ({ id: m.id, desc: m.name }))
+        const options = SUPPORTED_MODELS.map((m) => `${m.id} - ${m.name}`);
+        const choice = runInteractiveWizard(
+          "Select Gemini Model",
+          "Choose model to power operator:",
+          options,
+          "tui_kitty"
         );
         if (choice) {
-          setModel(choice);
-          console.log(`\n${C_GREEN}✓ Active model updated to: ${C_BOLD}${choice}${C_RESET}\n`);
+          const selectedId = choice.split(" - ")[0].trim();
+          setModel(selectedId);
+          console.log(`\n${C_GREEN}✓ Active model updated to: ${C_BOLD}${selectedId}${C_RESET}\n`);
         }
       }
-      rl.prompt();
-      return;
+      continue;
     }
 
     if (raw === "/help") {
@@ -220,12 +388,12 @@ async function main() {
       for (const c of COMMANDS) {
         console.log(`  ${C_YELLOW}${c.cmd.padEnd(12)}${C_RESET} - ${c.desc}`);
       }
-      console.log(`\n${C_BOLD}Features & Shortcuts:${C_RESET}`);
-      console.log(`  ${C_YELLOW}/<cmd>${C_RESET}     - Press Tab on / to autocomplete slash commands`);
-      console.log(`  ${C_YELLOW}@<file>${C_RESET}    - Press Tab on @ to autocomplete files & inject their contents`);
-      console.log(`  ${C_YELLOW}/model${C_RESET}     - Interactive menu to switch Gemini models on the fly\n`);
-      rl.prompt();
-      return;
+      console.log(`\n${C_BOLD}Interactive Features:${C_RESET}`);
+      console.log(`  ${C_YELLOW}/<cmd>${C_RESET}     - Pop-up autocomplete menu appears as you type /`);
+      console.log(`  ${C_YELLOW}@<file>${C_RESET}    - Pop-up file autocomplete appears as you type @`);
+      console.log(`  ${C_YELLOW}↑ / ↓${C_RESET}      - Navigate pop-up suggestions`);
+      console.log(`  ${C_YELLOW}Tab / Enter${C_RESET}- Autocomplete selected suggestion into input\n`);
+      continue;
     }
 
     if (raw === "/status") {
@@ -233,11 +401,10 @@ async function main() {
       const freeMem = Bun.spawnSync(["bash", "-c", "free -h | awk '/Mem:/ {print $3 \" / \" $2}'"]).stdout.toString().trim();
       const currentModel = getCurrentModel();
       console.log(`\n${C_CYAN}Status:${C_RESET} ${uptime} | ${C_GREEN}Mem:${C_RESET} ${freeMem} | ${C_MAGENTA}Model:${C_RESET} ${currentModel}\n`);
-      rl.prompt();
-      return;
+      continue;
     }
 
-    // Intercept @ file references and inject contents into prompt
+    // Intercept @ file references and inject file contents into payload
     const expandedQuery = resolveAtFileReferences(raw);
 
     // Reload shared buffer so commands run in Spotlight (SUPER + SPACE) immediately sync here
@@ -389,9 +556,7 @@ async function main() {
     } catch (err: any) {
       console.log(`\r${C_RED}Error: ${err.message || err}${C_RESET}\n`);
     }
-
-    rl.prompt();
-  });
+  }
 }
 
 main();
