@@ -27,20 +27,33 @@ async function main() {
       await proc.exited;
       process.exit(0);
     } else {
-      // Interactive model switcher via yad/fzf
+      // Interactive model switcher via dedicated clean two-column yad dialog
       const current = getCurrentModel();
-      const options = SUPPORTED_MODELS.map((m) => `${m.id} - ${m.name}`);
-      const choice = runInteractiveWizard(
-        `Select Gemini Model (Current: ${current})`,
-        "Choose the Gemini model to power Spotlight and Quake harness:",
-        options,
-        "gui_yad"
-      );
-      if (choice) {
-        const selectedId = choice.split(" ")[0].trim();
-        setModel(selectedId);
-        const proc = Bun.spawn(["notify-send", "-a", "spotlight", "Model Updated", `Active model set to: ${selectedId}`]);
-        await proc.exited;
+      const yadArgs = [
+        `--title=Select Gemini Model (Current: ${current})`,
+        "--text=Choose the Gemini model to power Spotlight, Voice, and Quake harness:",
+        "--list",
+        "--column=Model ID",
+        "--column=Profile",
+        "--width=650",
+        "--height=300",
+        "--center",
+        "--class=yad",
+        "--button=Cancel:1",
+        "--button=Select:0",
+      ];
+      for (const m of SUPPORTED_MODELS) {
+        yadArgs.push(m.id, m.name);
+      }
+      const res = Bun.spawnSync(["yad", ...yadArgs]);
+      if (res.exitCode === 0 && res.stdout) {
+        const out = res.stdout.toString().trim();
+        const selectedId = out.split("|")[0].trim();
+        if (selectedId) {
+          setModel(selectedId);
+          const proc = Bun.spawn(["notify-send", "-a", "spotlight", "Model Updated", `Active model set to: ${selectedId}`]);
+          await proc.exited;
+        }
       }
       process.exit(0);
     }

@@ -19,10 +19,10 @@ const ENV_FILE = path.join(CONFIG_DIR, ".env");
 const MODEL_FILE = path.join(CONFIG_DIR, "model.txt");
 
 export const SUPPORTED_MODELS = [
-  { id: "gemini-3.5-flash-lite", name: "Gemini 3.5 Flash-Lite (Default: Fast, lightweight system operator)" },
-  { id: "gemini-3.5-flash",      name: "Gemini 3.5 Flash (Balanced speed & multimodal reasoning)" },
-  { id: "gemini-3.8-flash",      name: "Gemini 3.8 Flash (High-performance fast generation)" },
-  { id: "gemini-3.1-pro-preview",name: "Gemini 3.1 Pro (Deep reasoning & complex task coding)" },
+  { id: "gemini-3.5-flash-lite", name: "Fast and lightweight system operator (Recommended)" },
+  { id: "gemini-3.5-flash",      name: "Balanced speed and multimodal reasoning" },
+  { id: "gemini-3.8-flash",      name: "High-performance fast generation" },
+  { id: "gemini-3.1-pro-preview",name: "Deep reasoning and complex task coding" },
 ];
 
 function resolveModel(): string {
