@@ -1,0 +1,7 @@
+{
+  "name": "hypr-harness",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Hyprland Spotlight & Quake Console System Operator driven by Gemini 3.5 Flash-Lite",
+  "dependencies": {}
+}
