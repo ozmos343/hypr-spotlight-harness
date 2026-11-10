@@ -183,21 +183,20 @@ async function main() {
           console.log(`${C_GREEN}▶ Action: ${action.rationale}${C_RESET}`);
           console.log(`${C_DIM}$ ${action.command}${C_RESET}`);
 
-          // If the agent requested a GUI dialog or a floating card window for this output, route through executeAction
-          const displayMode = action.display?.mode;
-          if (displayMode === "gui_dialog" || displayMode === "floating_card") {
+          // Guard against destructive actions or hazard loops: route through executor's confirmation barrier
+          if (action.safety === "destructive" || action.display?.mode === "gui_dialog" || action.display?.mode === "floating_card") {
             await executeAction(action);
             saveTurn({
               timestamp: Date.now(),
               user: raw,
               action,
-              outputSummary: `Displayed via ${displayMode}`,
+              outputSummary: `Executed via executor (${action.display?.mode || action.safety})`,
             });
             sessionHistory.push({
               timestamp: Date.now(),
               user: raw,
               action,
-              outputSummary: `Displayed via ${displayMode}`,
+              outputSummary: `Executed via executor (${action.display?.mode || action.safety})`,
             });
             break;
           }

@@ -16,6 +16,40 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+function isHazardousCommand(cmd: string): { hazardous: boolean; reason?: string } {
+  // 1. Detect loops that spawn background processes
+  if (/(?:for|while)\b.*\b(?:do|run)\b/i.test(cmd)) {
+    const rangeMatch = cmd.match(/\{(\d+)\.\.(\d+)\}/);
+    if (rangeMatch) {
+      const count = Math.abs(parseInt(rangeMatch[2], 10) - parseInt(rangeMatch[1], 10));
+      if (count > 5) {
+        return {
+          hazardous: true,
+          reason: `Excessive loop iteration (${count} runs) detected. Spawning multiple background tasks risks freezing the compositor.`,
+        };
+      }
+    }
+    if (/nohup|&\s*done|xargs\s+-P/i.test(cmd)) {
+      return {
+        hazardous: true,
+        reason: "Loop spawning concurrent background processes detected.",
+      };
+    }
+  }
+
+  // 2. Fork bombs and process bombs
+  if (/\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/i.test(cmd) || /bomb/i.test(cmd)) {
+    return { hazardous: true, reason: "Fork bomb pattern detected." };
+  }
+
+  // 3. Destructive mass-disk operations
+  if (/rm\s+(-[a-zA-Z]*r[a-zA-Z]*f*|-rf|-fr)\s+(\/|~|\$HOME|\*)/i.test(cmd)) {
+    return { hazardous: true, reason: "Recursive root/home directory deletion detected." };
+  }
+
+  return { hazardous: false };
+}
+
 function notify(title: string, message: string, timeoutMs = 12000, urgency: "low" | "normal" | "critical" = "normal") {
   const cleanMsg = stripMarkdown(message);
   spawn("notify-send", ["-a", "spotlight", "-t", String(timeoutMs), "-u", urgency, title, cleanMsg], {
@@ -199,20 +233,26 @@ export async function executeAction(action: FinalActionPayload): Promise<void> {
     }
 
     case "exec_shell": {
+      const hazard = isHazardousCommand(action.command);
+      const isDangerous = action.safety === "destructive" || hazard.hazardous;
       const displayMode = action.display?.mode || "floating_card";
       const title = action.display?.title || action.rationale;
 
-      if (action.safety === "destructive") {
+      if (isDangerous) {
+        const hazardNotice = hazard.reason ? `\\n\\n⚠️  SAFETY INTERCEPT: ${hazard.reason}` : "";
         const confirmScript = `
           if command -v yad &>/dev/null; then
-            yad --title="Confirm Action" --text="⚠️  DESTRUCTIVE ACTION REQUESTED\\n\\nRationale: ${action.rationale}\\n\\nCommand:\\n${action.command}" --class=yad --center --button="Cancel:1" --button="Execute:0"
+            yad --title="Confirm Action" --text="⚠️  HAZARDOUS / DESTRUCTIVE ACTION REQUESTED\\n\\nRationale: ${action.rationale}${hazardNotice}\\n\\nCommand:\\n${action.command}" --class=yad --center --button="Cancel:1" --button="Execute:0"
             if [ $? -eq 0 ]; then
               ${action.command}
             fi
           else
-            echo -e "\\033[1;31m⚠️  DESTRUCTIVE ACTION REQUESTED\\033[0m"
+            echo -e "\\033[1;31m⚠️  HAZARDOUS / DESTRUCTIVE ACTION REQUESTED\\033[0m"
             echo "=================================="
             echo "Rationale: ${action.rationale}"
+            if [ -n "${hazard.reason || ""}" ]; then
+              echo "Warning: ${hazard.reason}"
+            fi
             echo ""
             echo "Command to run:"
             echo "  ${action.command}"
