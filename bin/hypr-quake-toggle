@@ -4,12 +4,21 @@ set -eo pipefail
 HARNESS_DIR="$HOME/.config/hypr/harness"
 CONSOLE_CLASS="hypr-quake-operator"
 
-# Check if the quake console is already running
+# Check if special workspace 'quake_operator' is currently focused / active
+ACTIVE_SPECIAL=$(hyprctl monitors -j | jq -r '.[0].specialWorkspace.name // empty')
+
+if [[ "$ACTIVE_SPECIAL" == "special:quake_operator" ]]; then
+  # Already visible and active: toggle it closed
+  hyprctl dispatch togglespecialworkspace quake_operator
+  exit 0
+fi
+
+# Not currently visible: ensure the kitty process is running
 if ! hyprctl clients | grep -q "class: ${CONSOLE_CLASS}"; then
-  # Spawn onto special:quake_operator
   hyprctl dispatch 'hl.dsp.exec_cmd("[workspace special:quake_operator] kitty --class hypr-quake-operator --title \"Quake Operator Console\" bun run '"$HARNESS_DIR"'/quake_console.ts")'
   sleep 0.25
 fi
 
-# Toggle slide-in / slide-out
+# Show the special workspace and focus it
 hyprctl dispatch togglespecialworkspace quake_operator
+hyprctl dispatch focuswindow "class:${CONSOLE_CLASS}"

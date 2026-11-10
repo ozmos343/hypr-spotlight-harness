@@ -31,7 +31,6 @@ function completer(line: string): [string[], string] {
 }
 
 function renderHeader() {
-  console.clear();
   console.log(`${C_CYAN}┌─────────────────────────────────────────────────────────────┐${C_RESET}`);
   console.log(`${C_CYAN}│${C_RESET} ${C_BOLD}HYPR-OPERATOR :: QUAKE SLIDE-IN CONSOLE${C_RESET}                   ${C_CYAN}│${C_RESET}`);
   console.log(`${C_CYAN}│${C_RESET} ${C_DIM}Continuous multi-turn system operator harness (Gemini 3.5)  ${C_RESET} ${C_CYAN}│${C_RESET}`);
@@ -48,7 +47,9 @@ function renderRecentHistory(history: HistoryTurn[]) {
   for (const turn of history.slice(-4)) {
     const timeStr = new Date(turn.timestamp).toLocaleTimeString();
     console.log(`${C_DIM}[${timeStr}]${C_RESET} ${C_BOLD}You:${C_RESET} ${turn.user}`);
-    if (turn.action.action === "answer") {
+    if (turn.outputSummary) {
+      console.log(`${turn.outputSummary}`);
+    } else if (turn.action.action === "answer") {
       console.log(`${C_CYAN}Operator:${C_RESET} ${turn.action.summary.split("\n")[0].slice(0, 90)}...`);
     } else if (turn.action.action === "exec_shell") {
       console.log(`${C_GREEN}Exec:${C_RESET} \`${turn.action.command}\` ${C_DIM}(${turn.action.rationale})${C_RESET}`);
@@ -82,7 +83,6 @@ async function main() {
       return;
     }
 
-    // Builtin Slash Commands
     if (raw === "/exit" || raw === "/quit") {
       console.log(`${C_DIM}Closing console...${C_RESET}`);
       process.exit(0);
@@ -91,6 +91,7 @@ async function main() {
     if (raw === "/clear" || raw === "/reset") {
       clearRollingBuffer();
       sessionHistory.length = 0;
+      console.clear();
       renderHeader();
       console.log(`${C_YELLOW}Session history reset.${C_RESET}\n`);
       rl.prompt();
@@ -127,17 +128,17 @@ async function main() {
       return;
     }
 
-    // Multi-turn reasoning & execution
-    process.stdout.write(`${C_DIM}thinking & inspecting...${C_RESET}\r`);
+    process.stdout.write(`${C_DIM}thinking & planning...${C_RESET}\r`);
 
     try {
       const apiKey = getApiKey();
       let currentQuery = raw;
 
-      while (true) {
+      // Outer Loop: Auto-Error Correction & Self-Healing (up to 3 repair turns within budget)
+      for (let attempt = 0; attempt < 3; attempt++) {
         const action = await queryGemini(currentQuery, apiKey, sessionHistory);
 
-        // Handle Wizard Solicitation
+        // Wizard Interaction
         if (action.action === "prompt_wizard") {
           const userChoice = runInteractiveWizard(action.title, action.prompt, action.options, action.ui_type || "gui_yad");
           if (!userChoice) {
@@ -155,36 +156,92 @@ async function main() {
           continue;
         }
 
-        // Terminal Action Reached
-        saveTurn({
-          timestamp: Date.now(),
-          user: raw,
-          action,
-        });
-
-        sessionHistory.push({
-          timestamp: Date.now(),
-          user: raw,
-          action,
-        });
-
         console.log(`\r${C_RESET}${" ".repeat(30)}\r`);
 
         if (action.action === "answer") {
           console.log(`${C_CYAN}✦ Operator:${C_RESET}`);
           console.log(`${action.summary}\n`);
-        } else if (action.action === "exec_shell") {
+
+          saveTurn({
+            timestamp: Date.now(),
+            user: raw,
+            action,
+          });
+          sessionHistory.push({
+            timestamp: Date.now(),
+            user: raw,
+            action,
+          });
+          break;
+        }
+
+        if (action.action === "exec_shell") {
           console.log(`${C_GREEN}▶ Action: ${action.rationale}${C_RESET}`);
           console.log(`${C_DIM}$ ${action.command}${C_RESET}`);
+
           const proc = Bun.spawnSync(["bash", "-c", action.command]);
           const out = proc.stdout.toString().trim();
           const err = proc.stderr.toString().trim();
+
           if (out) console.log(out);
-          if (err) console.log(`${C_RED}${err}${C_RESET}`);
+
+          if (proc.exitCode !== 0) {
+            // Error occurred: propagate failure back to Gemini for autonomous self-healing
+            console.log(`${C_RED}${err || `Process exited with code ${proc.exitCode}`}${C_RESET}`);
+            console.log(`${C_YELLOW}↻ Error detected. Feeding back to operator for self-correction...${C_RESET}`);
+
+            const executionOutput = `Command failed [Exit ${proc.exitCode}]:\nCommand: ${action.command}\nStderr:\n${err}\nStdout:\n${out}`;
+
+            saveTurn({
+              timestamp: Date.now(),
+              user: raw,
+              action,
+              outputSummary: executionOutput,
+            });
+
+            sessionHistory.push({
+              timestamp: Date.now(),
+              user: raw,
+              action,
+              outputSummary: executionOutput,
+            });
+
+            // Prompt agent to analyze the error and retry with corrected logic
+            currentQuery = `The previous command failed with error:\n${err || out}\nPlease diagnose the issue, fix the syntax/command, and execute the corrected version.`;
+            continue;
+          }
+
+          // Command succeeded
           console.log("");
-        } else if (action.action === "spawn_widget") {
+          saveTurn({
+            timestamp: Date.now(),
+            user: raw,
+            action,
+            outputSummary: out ? `Success: ${out.slice(0, 150)}` : "Success",
+          });
+          sessionHistory.push({
+            timestamp: Date.now(),
+            user: raw,
+            action,
+            outputSummary: out ? `Success: ${out.slice(0, 150)}` : "Success",
+          });
+          break;
+        }
+
+        if (action.action === "spawn_widget") {
           console.log(`${C_MAGENTA}✦ Launching widget: ${action.title || action.command}${C_RESET}\n`);
+          saveTurn({
+            timestamp: Date.now(),
+            user: raw,
+            action,
+          });
+          sessionHistory.push({
+            timestamp: Date.now(),
+            user: raw,
+            action,
+          });
           await executeAction(action);
+          break;
         }
 
         break;
