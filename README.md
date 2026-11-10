@@ -80,32 +80,26 @@ An intelligent, lightweight, zero-latency system operator command bar and slide-
 
 ## Setup & Quickstart
 
-### 1. Clone the Repository
+### 1. One-Step Automated Install (Recommended)
+You can clone the repository anywhere and run the installer:
 ```bash
-git clone https://github.com/<your-user>/hypr-harness.git ~/.config/hypr/harness
-cd ~/.config/hypr/harness
+git clone https://github.com/<your-user>/hypr-harness.git
+cd hypr-harness
+./install.sh
 ```
+The installer automatically:
+- Checks system dependencies (`bun`, `kitty`, `wofi`).
+- Links the repository into `~/.config/hypr/harness`.
+- Generates a secure `~/.config/hypr/harness/.env` (mode `600`) if not already present.
+- Links `hypr-spotlight` and `hypr-quake-toggle` into `~/.local/bin/`.
 
 ### 2. Configure Your API Key
-Copy `.env.example` to `.env` and set your Google Gemini API key:
-```bash
-cp .env.example .env
-chmod 600 .env
-```
-Edit `.env`:
+Edit `~/.config/hypr/harness/.env`:
 ```ini
 GEMINI_API_KEY=AIzaSy...your_gemini_api_key_here
 ```
 
-### 3. Symlink Executables into PATH
-```bash
-mkdir -p ~/.local/bin
-ln -sf ~/.config/hypr/harness/bin/hypr-spotlight ~/.local/bin/hypr-spotlight
-ln -sf ~/.config/hypr/harness/bin/hypr-quake-toggle ~/.local/bin/hypr-quake-toggle
-chmod +x ~/.local/bin/hypr-spotlight ~/.local/bin/hypr-quake-toggle
-```
-
-### 4. Configure Hyprland
+### 3. Configure Hyprland
 
 #### Hyprland Lua (`~/.config/hypr/hyprland.lua`):
 ```lua
