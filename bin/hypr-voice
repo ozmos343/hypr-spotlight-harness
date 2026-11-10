@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+HARNESS_DIR="$HOME/.config/hypr/harness"
+STATE_FILE="/tmp/hypr-voice-record.pid"
+AUDIO_FILE="/tmp/hypr-voice-input.wav"
+
+# 1. If currently recording, STOP recording, transcribe, and execute
+if [[ -f "$STATE_FILE" ]]; then
+  REC_PID=$(cat "$STATE_FILE")
+  rm -f "$STATE_FILE"
+
+  if kill -0 "$REC_PID" 2>/dev/null; then
+    kill -SIGINT "$REC_PID" 2>/dev/null || kill -9 "$REC_PID" 2>/dev/null || true
+    sleep 0.2
+  fi
+
+  notify-send -a "hypr-voice" -u low -t 4000 "Voice Input" "Transcribing audio..."
+
+  if [[ ! -f "$AUDIO_FILE" ]] || [[ ! -s "$AUDIO_FILE" ]]; then
+    notify-send -a "hypr-voice" -u normal -t 5000 "Voice Input" "No audio captured."
+    exit 0
+  fi
+
+  TRANSCRIPT=$(bun run "$HARNESS_DIR/voice.ts" "$AUDIO_FILE" 2>/dev/null || true)
+  rm -f "$AUDIO_FILE"
+
+  if [[ -z "$TRANSCRIPT" ]]; then
+    notify-send -a "hypr-voice" -u normal -t 5000 "Voice Input" "No speech detected."
+    exit 0
+  fi
+
+  notify-send -a "hypr-voice" -u normal -t 6000 "Voice Query" "“${TRANSCRIPT}”"
+
+  # Dispatch transcribed text directly to hypr-harness operator
+  bun run "$HARNESS_DIR/cli.ts" "$TRANSCRIPT" >> /tmp/hypr-spotlight.log 2>&1 &
+  exit 0
+fi
+
+# 2. Not recording yet -> START RECORDING
+rm -f "$AUDIO_FILE"
+notify-send -a "hypr-voice" -u normal -t 5000 "Voice Input" "🎙️ Recording... Press keybind again to submit."
+
+# Record 16kHz mono 16-bit WAV using pw-record or arecord
+if command -v pw-record &>/dev/null; then
+  pw-record --rate=16000 --channels=1 --format=s16 "$AUDIO_FILE" &
+  echo $! > "$STATE_FILE"
+elif command -v arecord &>/dev/null; then
+  arecord -f S16_LE -r 16000 -c 1 "$AUDIO_FILE" &
+  echo $! > "$STATE_FILE"
+else
+  ffmpeg -f alsa -i default -ar 16000 -ac 1 -y "$AUDIO_FILE" &
+  echo $! > "$STATE_FILE"
+fi

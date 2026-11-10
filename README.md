@@ -3,6 +3,7 @@
 An intelligent, lightweight, zero-latency system operator command bar and slide-in continuous Quake console for Arch Linux and Hyprland, driven by Google Gemini 3.5 Flash-Lite.
 
 - **Spotlight Mode (`SUPER + SPACE`)**: Ephemeral floating pill search bar styled with `wofi`. Fast, one-off system operations, queries, and widget triggers.
+- **Voice Input Mode (`SUPER + SHIFT + SPACE`)**: Push-to-talk toggle speech operator. Tap to start recording; tap again to transcribe via Gemini and autonomously execute.
 - **Quake Mode (`SUPER + \``)**: Slide-in dropdown continuous TUI console on a special workspace (`special:quake_operator`). Multi-turn conversations, GNU readline editing, `/` tab autocompletion, inline output display, and autonomous self-healing execution loops.
 
 ---
@@ -129,6 +130,7 @@ hl.animation({ leaf = "specialWorkspace", enabled = true, speed = 5, bezier = "o
 
 -- Keybindings
 hl.bind(mainMod .. " + SPACE", hl.dsp.exec_cmd("~/.local/bin/hypr-spotlight"))
+hl.bind(mainMod .. " + SHIFT + SPACE", hl.dsp.exec_cmd("~/.local/bin/hypr-voice"))
 hl.bind(mainMod .. " + grave", hl.dsp.exec_cmd("~/.local/bin/hypr-quake-toggle"))
 ```
 

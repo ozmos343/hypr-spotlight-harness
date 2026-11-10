@@ -57,7 +57,7 @@ fi
 # 4. Symlink binaries into ~/.local/bin
 echo -e "\n${BOLD}[4/4] Linking executable binaries to $BIN_DIR...${RESET}"
 mkdir -p "$BIN_DIR"
-for script in hypr-spotlight hypr-quake-toggle; do
+for script in hypr-spotlight hypr-quake-toggle hypr-voice; do
   chmod +x "$TARGET_CONFIG_DIR/bin/$script"
   ln -sfn "$TARGET_CONFIG_DIR/bin/$script" "$BIN_DIR/$script"
   echo -e "  ${GREEN}✓ Linked $BIN_DIR/$script -> $TARGET_CONFIG_DIR/bin/$script${RESET}"
@@ -65,6 +65,7 @@ done
 
 echo -e "\n${GREEN}${BOLD}Installation complete!${RESET}"
 echo -e "Add the keybindings to your ${CYAN}~/.config/hypr/hyprland.lua${RESET} or ${CYAN}hyprland.conf${RESET}:"
-echo -e "  ${YELLOW}SUPER + SPACE${RESET} -> hypr-spotlight"
-echo -e "  ${YELLOW}SUPER + \`${RESET}     -> hypr-quake-toggle"
+echo -e "  ${YELLOW}SUPER + SPACE${RESET}       -> hypr-spotlight"
+echo -e "  ${YELLOW}SUPER + SHIFT + SPACE${RESET} -> hypr-voice (push-to-talk / toggle voice input)"
+echo -e "  ${YELLOW}SUPER + \`${RESET}           -> hypr-quake-toggle"
 echo -e "Then reload with: ${BOLD}hyprctl reload${RESET}\n"
