@@ -50,7 +50,8 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
 
   let ambientFloor = 0;
   let calibrationSamples = 0;
-  let dynamicThreshold = 12000; // conservative fallback until calibrated
+  let dynamicThreshold = 12000;
+  let finished = false;
 
   return new Promise((resolve, reject) => {
     const recorder = spawn("ffmpeg", [
@@ -68,6 +69,9 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
     let currentChunk = Buffer.alloc(0);
 
     const finish = () => {
+      if (finished) return;
+      finished = true;
+
       try {
         recorder.kill("SIGINT");
       } catch {}
@@ -83,7 +87,13 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
       resolve(true);
     };
 
+    // Listen for external signals (manual interrupt / PTT re-press)
+    process.on("SIGINT", () => finish());
+    process.on("SIGTERM", () => finish());
+    process.on("SIGUSR1", () => finish());
+
     recorder.stdout.on("data", (data: Buffer) => {
+      if (finished) return;
       currentChunk = Buffer.concat([currentChunk, data]);
 
       while (currentChunk.length >= FRAME_BYTES) {
@@ -99,7 +109,6 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
           calibrationSamples++;
           if (calibrationSamples === CALIBRATION_FRAMES) {
             ambientFloor = ambientFloor / CALIBRATION_FRAMES;
-            // Speech threshold set to 1.6x the measured ambient noise floor or +4500 RMS
             dynamicThreshold = Math.max(ambientFloor * 1.6, ambientFloor + 4500);
           }
           continue;
@@ -108,16 +117,14 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
         // 2. Active speech detection
         if (rms > dynamicThreshold) {
           speechFrames++;
-          if (speechFrames >= 2) { // 200ms of speech triggers active speech mode
+          if (speechFrames >= 2) {
             speechDetected = true;
           }
           silenceDurationMs = 0;
         } else {
-          // If speech was previously active and current RMS is back down near ambient
           if (speechDetected) {
             silenceDurationMs += FRAME_DURATION_MS;
             if (silenceDurationMs >= SILENCE_TIMEOUT_MS) {
-              // User finished speaking! Auto-stop immediately
               finish();
               return;
             }
@@ -134,13 +141,10 @@ export async function recordVoiceWithVAD(outputPath: string): Promise<boolean> {
 
     recorder.on("error", (err) => reject(err));
     recorder.on("close", () => {
-      if (!fs.existsSync(outputPath) && chunks.length > 0) {
+      if (!finished && chunks.length > 0) {
         finish();
       }
     });
-
-    process.on("SIGINT", () => finish());
-    process.on("SIGTERM", () => finish());
   });
 }
 

@@ -9,23 +9,27 @@ AUDIO_FILE="/tmp/hypr-voice-input.wav"
 if [[ -f "$STATE_FILE" ]]; then
   REC_PID=$(cat "$STATE_FILE" 2>/dev/null || true)
   rm -f "$STATE_FILE"
-  if [[ -n "$REC_PID" ]] && kill -0 "$REC_PID" 2>/dev/null; then
-    kill -SIGINT "$REC_PID" 2>/dev/null || kill -9 "$REC_PID" 2>/dev/null || true
+  if [[ -n "$REC_PID" ]]; then
+    # Signal the bun process directly so it flushes the audio file and exits
+    kill -SIGINT "$REC_PID" 2>/dev/null || true
+    # Also signal any child processes in its process group
+    pkill -P "$REC_PID" -SIGINT 2>/dev/null || true
   fi
-  # The background worker will finish and submit the audio file automatically
   exit 0
 fi
 
-# 2. Start recording with streaming Voice Activity Detection (auto-stops on silence)
+# 2. Start recording with streaming Voice Activity Detection (auto-stops on silence or manual re-press)
 notify-send -a "hypr-voice" -u normal -t 8000 "Voice Input" "🎙️ Listening... (Speak now; auto-detects when you finish)"
 
-# Launch VAD recorder in background subshell
+# Launch background worker
 (
-  echo $$ > "$STATE_FILE"
+  # Spawn VAD recorder in background and store its PID in STATE_FILE
+  bun run "$HARNESS_DIR/vad_record.ts" "$AUDIO_FILE" >/dev/null 2>&1 &
+  BUN_PID=$!
+  echo "$BUN_PID" > "$STATE_FILE"
 
-  # Run VAD recorder which listens and auto-exits after ~1.4s of silence following speech
-  bun run "$HARNESS_DIR/vad_record.ts" "$AUDIO_FILE" >/dev/null 2>&1 || true
-
+  # Wait for VAD recorder to finish (either via silence auto-detection, timeout, or manual SIGINT)
+  wait "$BUN_PID" 2>/dev/null || true
   rm -f "$STATE_FILE"
 
   if [[ ! -f "$AUDIO_FILE" ]] || [[ ! -s "$AUDIO_FILE" ]]; then
