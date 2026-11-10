@@ -1,7 +1,9 @@
 import * as readline from "readline";
+import * as fs from "fs";
+import * as path from "path";
 import { queryGemini, type FinalActionPayload } from "./agent";
 import { executeAction, runInteractiveWizard } from "./executor";
-import { getApiKey } from "./config";
+import { getApiKey, setModel, getCurrentModel, SUPPORTED_MODELS } from "./config";
 import { loadRollingBuffer, saveTurn, clearRollingBuffer, searchPersistentHistory, type HistoryTurn } from "./history";
 
 const C_RESET = "\x1b[0m";
@@ -15,6 +17,7 @@ const C_RED = "\x1b[1;31m";
 
 const COMMANDS = [
   { cmd: "/history", desc: "View persistent command audit log" },
+  { cmd: "/model",   desc: "Switch or view active Gemini model" },
   { cmd: "/clear",   desc: "Reset current rolling conversation buffer" },
   { cmd: "/status",  desc: "Display system stats (uptime, mem, load)" },
   { cmd: "/help",    desc: "Display command help" },
@@ -23,18 +26,101 @@ const COMMANDS = [
 ];
 
 function completer(line: string): [string[], string] {
+  // 1. Slash commands autocomplete
   if (line.startsWith("/")) {
     const hits = COMMANDS.map((c) => c.cmd).filter((c) => c.startsWith(line));
     return [hits.length ? hits : COMMANDS.map((c) => c.cmd), line];
   }
+
+  // 2. @ File Autocomplete
+  const atMatch = line.match(/(^|.*?\s)@([^\s]*)$/);
+  if (atMatch) {
+    const prefix = atMatch[2];
+    const baseDir = prefix.startsWith("/")
+      ? path.dirname(prefix)
+      : path.join(process.cwd(), path.dirname(prefix));
+    const searchBase = path.basename(prefix);
+
+    try {
+      if (fs.existsSync(baseDir)) {
+        const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+        const matches: string[] = [];
+        for (const entry of entries) {
+          if (entry.name.startsWith(searchBase) || !searchBase) {
+            const relPath = prefix.includes("/")
+              ? path.join(path.dirname(prefix), entry.name)
+              : entry.name;
+            matches.push(`@${relPath}${entry.isDirectory() ? "/" : ""}`);
+          }
+        }
+        if (matches.length > 0) {
+          return [matches, `@${prefix}`];
+        }
+      }
+    } catch {}
+  }
+
   return [[], line];
 }
 
+function resolveAtFileReferences(input: string): string {
+  return input.replace(/@([a-zA-Z0-9_\-\.\/~]+)/g, (match, filePath) => {
+    const resolvedPath = filePath.startsWith("~")
+      ? path.join(process.env.HOME || "", filePath.slice(1))
+      : path.resolve(process.cwd(), filePath);
+
+    if (fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isFile()) {
+      try {
+        const stats = fs.statSync(resolvedPath);
+        if (stats.size > 200 * 1024) {
+          return `\n[Referenced File @${filePath}: file size too large (${(stats.size / 1024).toFixed(1)} KB)]\n`;
+        }
+        const content = fs.readFileSync(resolvedPath, "utf-8");
+        return `\n--- START OF FILE: @${filePath} ---\n${content}\n--- END OF FILE: @${filePath} ---\n`;
+      } catch (err: any) {
+        return `[Error reading file @${filePath}: ${err.message}]`;
+      }
+    }
+    return match;
+  });
+}
+
+function runInteractiveMenu(title: string, items: Array<{ id: string; desc: string }>): string | null {
+  const formatted = items.map((i) => `${i.id} - ${i.desc}`).join("\n");
+  const tmpIn = `/tmp/quake_menu_${Date.now()}_in.txt`;
+  const tmpOut = `/tmp/quake_menu_${Date.now()}_out.txt`;
+  fs.writeFileSync(tmpIn, formatted, "utf-8");
+
+  try {
+    const proc = Bun.spawnSync([
+      "fzf",
+      "--height=40%",
+      "--reverse",
+      `--header=${title}`,
+      "--prompt=Select > "
+    ], {
+      stdin: fs.openSync(tmpIn, "r"),
+      stdout: "pipe",
+      stderr: "inherit"
+    });
+
+    const chosen = proc.stdout.toString().trim();
+    if (chosen) {
+      return chosen.split(" - ")[0].trim();
+    }
+  } catch {} finally {
+    try { fs.unlinkSync(tmpIn); } catch {}
+    try { fs.unlinkSync(tmpOut); } catch {}
+  }
+  return null;
+}
+
 function renderHeader() {
+  const currentModel = getCurrentModel();
   console.log(`${C_CYAN}┌─────────────────────────────────────────────────────────────┐${C_RESET}`);
   console.log(`${C_CYAN}│${C_RESET} ${C_BOLD}HYPR-OPERATOR :: QUAKE SLIDE-IN CONSOLE${C_RESET}                   ${C_CYAN}│${C_RESET}`);
-  console.log(`${C_CYAN}│${C_RESET} ${C_DIM}Continuous multi-turn system operator harness (Gemini 3.5)  ${C_RESET} ${C_CYAN}│${C_RESET}`);
-  console.log(`${C_CYAN}│${C_RESET} ${C_YELLOW}Tab completion:${C_RESET} Type '/' and press Tab for slash commands ${C_CYAN}│${C_RESET}`);
+  console.log(`${C_CYAN}│${C_RESET} ${C_DIM}Continuous multi-turn harness [Model: ${C_YELLOW}${currentModel}${C_DIM}]${C_RESET}     ${C_CYAN}│${C_RESET}`);
+  console.log(`${C_CYAN}│${C_RESET} ${C_YELLOW}Tab completion:${C_RESET} Type '/' for commands, '@' for file refs   ${C_CYAN}│${C_RESET}`);
   console.log(`${C_CYAN}└─────────────────────────────────────────────────────────────┘${C_RESET}\n`);
 }
 
@@ -77,7 +163,7 @@ async function main() {
   rl.prompt();
 
   rl.on("line", async (line) => {
-    const raw = line.trim();
+    let raw = line.trim();
     if (!raw) {
       rl.prompt();
       return;
@@ -110,12 +196,34 @@ async function main() {
       return;
     }
 
+    if (raw === "/model" || raw.startsWith("/model ")) {
+      const target = raw.replace(/^\/model\s*/, "").trim();
+      if (target) {
+        setModel(target);
+        console.log(`\n${C_GREEN}✓ Active model updated to: ${C_BOLD}${target}${C_RESET}\n`);
+      } else {
+        const choice = runInteractiveMenu(
+          "Select Gemini Model (ESC to cancel)",
+          SUPPORTED_MODELS.map((m) => ({ id: m.id, desc: m.name }))
+        );
+        if (choice) {
+          setModel(choice);
+          console.log(`\n${C_GREEN}✓ Active model updated to: ${C_BOLD}${choice}${C_RESET}\n`);
+        }
+      }
+      rl.prompt();
+      return;
+    }
+
     if (raw === "/help") {
       console.log(`\n${C_BOLD}Quake Operator Slash Commands:${C_RESET}`);
       for (const c of COMMANDS) {
         console.log(`  ${C_YELLOW}${c.cmd.padEnd(12)}${C_RESET} - ${c.desc}`);
       }
-      console.log(`\n  ${C_DIM}Or enter any natural language instruction (e.g. "show disk usage", "inspect hyprland.lua")${C_RESET}\n`);
+      console.log(`\n${C_BOLD}Features & Shortcuts:${C_RESET}`);
+      console.log(`  ${C_YELLOW}/<cmd>${C_RESET}     - Press Tab on / to autocomplete slash commands`);
+      console.log(`  ${C_YELLOW}@<file>${C_RESET}    - Press Tab on @ to autocomplete files & inject their contents`);
+      console.log(`  ${C_YELLOW}/model${C_RESET}     - Interactive menu to switch Gemini models on the fly\n`);
       rl.prompt();
       return;
     }
@@ -123,24 +231,27 @@ async function main() {
     if (raw === "/status") {
       const uptime = Bun.spawnSync(["uptime", "-p"]).stdout.toString().trim();
       const freeMem = Bun.spawnSync(["bash", "-c", "free -h | awk '/Mem:/ {print $3 \" / \" $2}'"]).stdout.toString().trim();
-      console.log(`\n${C_CYAN}System Status:${C_RESET} ${uptime} | ${C_GREEN}Mem Used:${C_RESET} ${freeMem}\n`);
+      const currentModel = getCurrentModel();
+      console.log(`\n${C_CYAN}Status:${C_RESET} ${uptime} | ${C_GREEN}Mem:${C_RESET} ${freeMem} | ${C_MAGENTA}Model:${C_RESET} ${currentModel}\n`);
       rl.prompt();
       return;
     }
 
+    // Intercept @ file references and inject contents into prompt
+    const expandedQuery = resolveAtFileReferences(raw);
+
     // Reload shared buffer so commands run in Spotlight (SUPER + SPACE) immediately sync here
     const currentBuffer = loadRollingBuffer();
-    const sessionHistory = currentBuffer.length > 0 ? currentBuffer : loadRollingBuffer();
+    const activeHistory = currentBuffer.length > 0 ? currentBuffer : sessionHistory;
 
     process.stdout.write(`${C_DIM}thinking & planning...${C_RESET}\r`);
 
     try {
       const apiKey = getApiKey();
-      let currentQuery = raw;
+      let currentQuery = expandedQuery;
 
-      // Outer Loop: Auto-Error Correction & Self-Healing (up to 3 repair turns within budget)
       for (let attempt = 0; attempt < 3; attempt++) {
-        const action = await queryGemini(currentQuery, apiKey, sessionHistory);
+        const action = await queryGemini(currentQuery, apiKey, activeHistory);
 
         // Wizard Interaction
         if (action.action === "prompt_wizard") {
@@ -150,9 +261,9 @@ async function main() {
             break;
           }
 
-          sessionHistory.push({
+          activeHistory.push({
             timestamp: Date.now(),
-            user: currentQuery,
+            user: raw,
             action,
           });
 
@@ -171,7 +282,7 @@ async function main() {
             user: raw,
             action,
           });
-          sessionHistory.push({
+          activeHistory.push({
             timestamp: Date.now(),
             user: raw,
             action,
@@ -183,7 +294,6 @@ async function main() {
           console.log(`${C_GREEN}▶ Action: ${action.rationale}${C_RESET}`);
           console.log(`${C_DIM}$ ${action.command}${C_RESET}`);
 
-          // 1. Destructive actions or GUI dialogs (e.g. yad) always go through executor's confirmation / GUI spawner
           if (action.safety === "destructive" || action.display?.mode === "gui_dialog") {
             await executeAction(action);
             saveTurn({
@@ -192,7 +302,7 @@ async function main() {
               action,
               outputSummary: `Executed via executor (${action.display?.mode || action.safety})`,
             });
-            sessionHistory.push({
+            activeHistory.push({
               timestamp: Date.now(),
               user: raw,
               action,
@@ -201,13 +311,11 @@ async function main() {
             break;
           }
 
-          // 2. Run in-console first
           const proc = Bun.spawnSync(["bash", "-c", action.command]);
           const out = proc.stdout.toString().trim();
           const err = proc.stderr.toString().trim();
 
           if (proc.exitCode !== 0) {
-            // Error occurred: propagate failure back to Gemini for autonomous self-healing
             console.log(`${C_RED}${err || `Process exited with code ${proc.exitCode}`}${C_RESET}`);
             console.log(`${C_YELLOW}↻ Error detected. Feeding back to operator for self-correction...${C_RESET}`);
 
@@ -220,28 +328,24 @@ async function main() {
               outputSummary: executionOutput,
             });
 
-            sessionHistory.push({
+            activeHistory.push({
               timestamp: Date.now(),
               user: raw,
               action,
               outputSummary: executionOutput,
             });
 
-            // Prompt agent to analyze the error and retry with corrected logic
             currentQuery = `The previous command failed with error:\n${err || out}\nPlease diagnose the issue, fix the syntax/command, and execute the corrected version.`;
             continue;
           }
 
-          // 3. Command succeeded
           const lineCount = out ? out.split("\n").length : 0;
           const isExcessivelyLong = lineCount > 25 || out.length > 2500;
 
           if (isExcessivelyLong && action.display?.mode === "floating_card") {
-            // Output is too large to comfortably view inline in the drop-down; spawn dedicated floating card
             console.log(`${C_DIM}(Output is ${lineCount} lines; opened in floating viewer window)${C_RESET}\n`);
             await executeAction(action);
           } else {
-            // Pure text output that comfortably fits in the console: print directly
             if (out) {
               console.log(`${out}\n`);
             } else {
@@ -255,7 +359,7 @@ async function main() {
             action,
             outputSummary: out ? `Success: ${out.slice(0, 150)}` : "Success",
           });
-          sessionHistory.push({
+          activeHistory.push({
             timestamp: Date.now(),
             user: raw,
             action,
@@ -271,7 +375,7 @@ async function main() {
             user: raw,
             action,
           });
-          sessionHistory.push({
+          activeHistory.push({
             timestamp: Date.now(),
             user: raw,
             action,

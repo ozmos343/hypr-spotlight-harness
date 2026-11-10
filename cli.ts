@@ -1,6 +1,6 @@
 import { queryGemini, type FinalActionPayload } from "./agent";
 import { executeAction, runInteractiveWizard } from "./executor";
-import { config, getApiKey } from "./config";
+import { config, getApiKey, setModel, getCurrentModel, SUPPORTED_MODELS } from "./config";
 import { loadRollingBuffer, saveTurn, clearRollingBuffer, searchPersistentHistory, type HistoryTurn } from "./history";
 
 async function main() {
@@ -15,6 +15,35 @@ async function main() {
     const proc = Bun.spawn(["notify-send", "-a", "spotlight", "Spotlight", "Session history cleared."]);
     await proc.exited;
     process.exit(0);
+  }
+
+  // Handle model change/query commands
+  if (/^\/?(model|set model|change model)\b/i.test(initialQuery)) {
+    const parts = initialQuery.split(/\s+/);
+    if (parts.length > 1 && parts[1].includes("gemini")) {
+      const targetModel = parts[1].trim();
+      setModel(targetModel);
+      const proc = Bun.spawn(["notify-send", "-a", "spotlight", "Model Updated", `Active model set to: ${targetModel}`]);
+      await proc.exited;
+      process.exit(0);
+    } else {
+      // Interactive model switcher via yad/fzf
+      const current = getCurrentModel();
+      const options = SUPPORTED_MODELS.map((m) => `${m.id} - ${m.name}`);
+      const choice = runInteractiveWizard(
+        `Select Gemini Model (Current: ${current})`,
+        "Choose the Gemini model to power Spotlight and Quake harness:",
+        options,
+        "gui_yad"
+      );
+      if (choice) {
+        const selectedId = choice.split(" ")[0].trim();
+        setModel(selectedId);
+        const proc = Bun.spawn(["notify-send", "-a", "spotlight", "Model Updated", `Active model set to: ${selectedId}`]);
+        await proc.exited;
+      }
+      process.exit(0);
+    }
   }
 
   // Abort controller for fast exit
